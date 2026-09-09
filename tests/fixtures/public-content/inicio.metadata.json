@@ -1,0 +1,10 @@
+{
+  "kind": "page",
+  "slug": "inicio",
+  "title": "Inicio sintético",
+  "summary": "Fixture publicado para comprobar el lector.",
+  "status": "published",
+  "sourceIds": ["SRC-GP-TEST-FIXTURE"],
+  "reviewedAt": "2026-09-09T00:00:00.000Z",
+  "publishedAt": "2026-09-09T00:00:00.000Z"
+}

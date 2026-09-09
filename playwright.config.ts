@@ -14,6 +14,8 @@ export default defineConfig({
       APP_ROLE: "web",
       DATABASE_URL: "postgresql://health:health@127.0.0.1:1/unavailable",
       LOG_LEVEL: "info",
+      PUBLIC_CONTACT_EMAIL: "contact@example.com",
+      PUBLIC_WHATSAPP_USERNAME: "example.brand",
     },
     url: "http://127.0.0.1:3000",
     reuseExistingServer: !process.env.CI,
