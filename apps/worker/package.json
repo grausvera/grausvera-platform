@@ -1,0 +1,20 @@
+{
+  "name": "@grausvera/worker",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc --project tsconfig.json",
+    "enqueue:synthetic": "node dist/enqueue-synthetic.js",
+    "start": "node dist/index.js",
+    "typecheck": "tsc --project tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@grausvera/operations": "0.0.0",
+    "pg-boss": "12.30.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.13.3",
+    "typescript": "7.0.2"
+  }
+}
