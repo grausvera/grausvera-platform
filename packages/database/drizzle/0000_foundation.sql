@@ -1,0 +1,1 @@
+-- Establishes the migration baseline without creating domain tables.

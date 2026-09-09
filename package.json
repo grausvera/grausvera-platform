@@ -1,0 +1,35 @@
+{
+  "name": "grausvera-platform",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "npm@11.19.0",
+  "engines": {
+    "node": "24.20.0",
+    "npm": "11.19.0"
+  },
+  "workspaces": [
+    "apps/*",
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "npm run build --workspace @grausvera/database && npm run build --workspace @grausvera/operations && npm run build --workspace @grausvera/shared && npm run build --workspace @grausvera/web && npm run build --workspace @grausvera/worker",
+    "db:migrate": "npm run build --workspace @grausvera/database && node --env-file-if-exists=.env packages/database/dist/migrate.js",
+    "format:check": "biome format .",
+    "job:enqueue:synthetic": "npm run build --workspace @grausvera/worker && npm run enqueue:synthetic --workspace @grausvera/worker",
+    "lint": "biome lint .",
+    "test:contracts": "node scripts/pending-suite.mjs test:contracts TASK-GP-014",
+    "test:e2e": "playwright test",
+    "test:eval": "node scripts/pending-suite.mjs test:eval TASK-GP-025",
+    "test:integration": "node scripts/pending-suite.mjs test:integration TASK-GP-014",
+    "test:recovery": "node scripts/pending-suite.mjs test:recovery TASK-GP-061",
+    "test:security": "node scripts/pending-suite.mjs test:security TASK-GP-020",
+    "test:unit": "vitest run",
+    "typecheck": "npm run typecheck --workspace @grausvera/database && npm run typecheck --workspace @grausvera/operations && npm run typecheck --workspace @grausvera/shared && npm run typecheck --workspace @grausvera/web && npm run typecheck --workspace @grausvera/worker"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "2.5.12",
+    "@playwright/test": "1.63.0",
+    "vitest": "5.0.0"
+  }
+}
