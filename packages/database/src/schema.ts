@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm";
 import {
+  bigint,
   boolean,
   check,
   customType,
@@ -9,6 +10,7 @@ import {
   jsonb,
   pgEnum,
   pgTable,
+  primaryKey,
   text,
   timestamp,
   unique,
@@ -101,6 +103,18 @@ export const consentRequestStatus = pgEnum("consent_request_status", [
 export const conversationInterventionKind = pgEnum("conversation_intervention_kind", [
   "STOP",
   "HUMAN_REQUEST",
+]);
+export const budgetReservationStatus = pgEnum("budget_reservation_status", [
+  "RESERVED",
+  "CONSUMED",
+  "RELEASED",
+  "UNCERTAIN",
+  "REJECTED",
+]);
+export const attachmentStatus = pgEnum("attachment_status", [
+  "QUARANTINED",
+  "REVIEWED",
+  "REJECTED",
 ]);
 const bytea = customType<{ data: Buffer; driverData: Buffer }>({ dataType: () => "bytea" });
 
@@ -561,6 +575,303 @@ export const operatorCaseAssignments = pgTable(
     }).onDelete("restrict"),
     unique("operator_case_assignments_unique").on(t.organizationId, t.caseId),
     index("operator_case_assignments_user_idx").on(t.organizationId, t.userId, t.active),
+  ],
+);
+
+export const quotaPolicies = pgTable(
+  "quota_policies",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "restrict" }),
+    version: integer("version").notNull(),
+    periodSeconds: integer("period_seconds").notNull(),
+    caseMessageLimit: integer("case_message_limit").notNull(),
+    contactMessageLimit: integer("contact_message_limit").notNull(),
+    caseActiveSecondsLimit: integer("case_active_seconds_limit").notNull(),
+    effectiveAt: timestamp("effective_at", { withTimezone: true }).defaultNow().notNull(),
+    createdAt,
+  },
+  (t) => [
+    unique("quota_policies_version_unique").on(t.organizationId, t.version),
+    index("quota_policies_effective_idx").on(t.organizationId, t.effectiveAt),
+    check(
+      "quota_policies_limits_positive",
+      sql`${t.version} > 0 and ${t.periodSeconds} > 0 and ${t.caseMessageLimit} > 0 and ${t.contactMessageLimit} > 0 and ${t.caseActiveSecondsLimit} > 0`,
+    ),
+  ],
+);
+
+export const caseQuotaUsages = pgTable(
+  "case_quota_usages",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id").notNull(),
+    caseId: uuid("case_id").notNull(),
+    policyId: uuid("policy_id")
+      .notNull()
+      .references(() => quotaPolicies.id, { onDelete: "restrict" }),
+    windowStartedAt: timestamp("window_started_at", { withTimezone: true }).defaultNow().notNull(),
+    windowEndsAt: timestamp("window_ends_at", { withTimezone: true }).notNull(),
+    messageCount: integer("message_count").default(0).notNull(),
+    activeSeconds: integer("active_seconds").default(0).notNull(),
+    lastAccountedAt: timestamp("last_accounted_at", { withTimezone: true }).defaultNow().notNull(),
+    exceededAt: timestamp("exceeded_at", { withTimezone: true }),
+    updatedAt,
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.organizationId, t.caseId],
+      foreignColumns: [prospectCases.organizationId, prospectCases.id],
+      name: "case_quota_usages_case_fk",
+    }).onDelete("restrict"),
+    unique("case_quota_usages_unique").on(t.organizationId, t.caseId, t.policyId),
+    index("case_quota_usages_window_idx").on(t.organizationId, t.windowEndsAt),
+    check("case_quota_usages_nonnegative", sql`${t.messageCount} >= 0 and ${t.activeSeconds} >= 0`),
+    check("case_quota_usages_window_valid", sql`${t.windowEndsAt} > ${t.windowStartedAt}`),
+  ],
+);
+
+export const contactQuotaUsages = pgTable(
+  "contact_quota_usages",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id").notNull(),
+    contactPointId: uuid("contact_point_id").notNull(),
+    policyId: uuid("policy_id")
+      .notNull()
+      .references(() => quotaPolicies.id, { onDelete: "restrict" }),
+    windowStartedAt: timestamp("window_started_at", { withTimezone: true }).defaultNow().notNull(),
+    windowEndsAt: timestamp("window_ends_at", { withTimezone: true }).notNull(),
+    messageCount: integer("message_count").default(0).notNull(),
+    exceededAt: timestamp("exceeded_at", { withTimezone: true }),
+    updatedAt,
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.organizationId, t.contactPointId],
+      foreignColumns: [contactPoints.organizationId, contactPoints.id],
+      name: "contact_quota_usages_contact_fk",
+    }).onDelete("restrict"),
+    unique("contact_quota_usages_unique").on(t.organizationId, t.contactPointId, t.policyId),
+    index("contact_quota_usages_window_idx").on(t.organizationId, t.windowEndsAt),
+    check("contact_quota_usages_nonnegative", sql`${t.messageCount} >= 0`),
+    check("contact_quota_usages_window_valid", sql`${t.windowEndsAt} > ${t.windowStartedAt}`),
+  ],
+);
+
+export const quotaConsumptions = pgTable(
+  "quota_consumptions",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "restrict" }),
+    messageId: uuid("message_id")
+      .notNull()
+      .references(() => messages.id, { onDelete: "restrict" }),
+    caseUsageId: uuid("case_usage_id")
+      .notNull()
+      .references(() => caseQuotaUsages.id, { onDelete: "restrict" }),
+    contactUsageId: uuid("contact_usage_id")
+      .notNull()
+      .references(() => contactQuotaUsages.id, { onDelete: "restrict" }),
+    exceeded: boolean("exceeded").default(false).notNull(),
+    reason: text("reason"),
+    createdAt,
+  },
+  (t) => [
+    unique("quota_consumptions_message_unique").on(t.organizationId, t.messageId),
+    check(
+      "quota_consumptions_reason_check",
+      sql`(${t.exceeded} and ${t.reason} is not null) or (not ${t.exceeded} and ${t.reason} is null)`,
+    ),
+  ],
+);
+
+export const budgetPolicies = pgTable(
+  "budget_policies",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "restrict" }),
+    version: integer("version").notNull(),
+    currency: text("currency").default("USD").notNull(),
+    alertMicros: bigint("alert_micros", { mode: "number" }).notNull(),
+    hardLimitMicros: bigint("hard_limit_micros", { mode: "number" }).notNull(),
+    effectiveAt: timestamp("effective_at", { withTimezone: true }).defaultNow().notNull(),
+    createdAt,
+  },
+  (t) => [
+    unique("budget_policies_version_unique").on(t.organizationId, t.version),
+    unique("budget_policies_organization_id_unique").on(t.organizationId, t.id),
+    index("budget_policies_effective_idx").on(t.organizationId, t.effectiveAt),
+    check("budget_policies_currency_check", sql`${t.currency} = 'USD'`),
+    check(
+      "budget_policies_limits_check",
+      sql`${t.version} > 0 and ${t.alertMicros} > 0 and ${t.hardLimitMicros} >= ${t.alertMicros}`,
+    ),
+  ],
+);
+
+export const budgetLedgers = pgTable(
+  "budget_ledgers",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id").notNull(),
+    caseId: uuid("case_id").notNull(),
+    policyId: uuid("policy_id").notNull(),
+    periodKey: text("period_key").default("R1_CASE_LIFETIME").notNull(),
+    reservedMicros: bigint("reserved_micros", { mode: "number" }).default(0).notNull(),
+    consumedMicros: bigint("consumed_micros", { mode: "number" }).default(0).notNull(),
+    uncertainMicros: bigint("uncertain_micros", { mode: "number" }).default(0).notNull(),
+    alertedAt: timestamp("alerted_at", { withTimezone: true }),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.organizationId, t.caseId],
+      foreignColumns: [prospectCases.organizationId, prospectCases.id],
+      name: "budget_ledgers_case_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.organizationId, t.policyId],
+      foreignColumns: [budgetPolicies.organizationId, budgetPolicies.id],
+      name: "budget_ledgers_policy_fk",
+    }).onDelete("restrict"),
+    unique("budget_ledgers_unique").on(t.organizationId, t.caseId, t.periodKey),
+    unique("budget_ledgers_organization_case_id_unique").on(t.organizationId, t.caseId, t.id),
+    check(
+      "budget_ledgers_nonnegative",
+      sql`${t.reservedMicros} >= 0 and ${t.consumedMicros} >= 0 and ${t.uncertainMicros} >= 0`,
+    ),
+    check("budget_ledgers_period_check", sql`${t.periodKey} = 'R1_CASE_LIFETIME'`),
+  ],
+);
+
+export const budgetReservations = pgTable(
+  "budget_reservations",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "restrict" }),
+    caseId: uuid("case_id").notNull(),
+    ledgerId: uuid("ledger_id").notNull(),
+    stage: text("stage").notNull(),
+    purpose: text("purpose").notNull(),
+    logicalOperationKey: text("logical_operation_key").notNull(),
+    attemptKey: text("attempt_key").notNull(),
+    maximumCostMicros: bigint("maximum_cost_micros", { mode: "number" }).notNull(),
+    actualCostMicros: bigint("actual_cost_micros", { mode: "number" }),
+    status: budgetReservationStatus("status").notNull(),
+    createdAt,
+    reconciledAt: timestamp("reconciled_at", { withTimezone: true }),
+    updatedAt,
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.organizationId, t.caseId],
+      foreignColumns: [prospectCases.organizationId, prospectCases.id],
+      name: "budget_reservations_case_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.organizationId, t.caseId, t.ledgerId],
+      foreignColumns: [budgetLedgers.organizationId, budgetLedgers.caseId, budgetLedgers.id],
+      name: "budget_reservations_ledger_fk",
+    }).onDelete("restrict"),
+    unique("budget_reservations_attempt_unique").on(t.organizationId, t.attemptKey),
+    index("budget_reservations_operation_idx").on(
+      t.organizationId,
+      t.caseId,
+      t.logicalOperationKey,
+    ),
+    check(
+      "budget_reservations_values_check",
+      sql`${t.maximumCostMicros} > 0 and (${t.actualCostMicros} is null or ${t.actualCostMicros} >= 0)`,
+    ),
+    check("budget_reservations_stage_check", sql`length(${t.stage}) > 0`),
+    check("budget_reservations_operation_check", sql`length(${t.logicalOperationKey}) > 0`),
+    check(
+      "budget_reservations_purpose_check",
+      sql`${t.purpose} in ('INTERVIEW_EXTRACT', 'NEXT_QUESTION', 'BRIEF_SYNTHESIS', 'BOUNDED_RESEARCH')`,
+    ),
+  ],
+);
+
+export const attachmentCircuitBreakers = pgTable(
+  "attachment_circuit_breakers",
+  {
+    organizationId: uuid("organization_id").notNull(),
+    providerConnectionId: uuid("provider_connection_id").notNull(),
+    consecutiveFailures: integer("consecutive_failures").default(0).notNull(),
+    openUntil: timestamp("open_until", { withTimezone: true }),
+    probeInFlight: boolean("probe_in_flight").default(false).notNull(),
+    updatedAt,
+  },
+  (t) => [
+    primaryKey({
+      columns: [t.organizationId, t.providerConnectionId],
+      name: "attachment_circuit_breakers_pk",
+    }),
+    foreignKey({
+      columns: [t.organizationId, t.providerConnectionId],
+      foreignColumns: [providerConnections.organizationId, providerConnections.id],
+      name: "attachment_circuit_breakers_provider_fk",
+    }).onDelete("restrict"),
+    check("attachment_circuit_breakers_failures_check", sql`${t.consecutiveFailures} >= 0`),
+  ],
+);
+
+export const attachments = pgTable(
+  "attachments",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id").notNull(),
+    caseId: uuid("case_id").notNull(),
+    mediaReferenceId: uuid("media_reference_id")
+      .notNull()
+      .references(() => mediaReferences.id, { onDelete: "restrict" }),
+    objectKey: text("object_key").notNull(),
+    mimeType: text("mime_type").notNull(),
+    sizeBytes: bigint("size_bytes", { mode: "number" }).notNull(),
+    sha256: text("sha256").notNull(),
+    status: attachmentStatus("status").default("QUARANTINED").notNull(),
+    reviewedByUserId: text("reviewed_by_user_id"),
+    reviewedAt: timestamp("reviewed_at", { withTimezone: true }),
+    rejectionReason: text("rejection_reason"),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.organizationId, t.caseId],
+      foreignColumns: [prospectCases.organizationId, prospectCases.id],
+      name: "attachments_case_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.organizationId, t.reviewedByUserId],
+      foreignColumns: [operatorMemberships.organizationId, operatorMemberships.userId],
+      name: "attachments_reviewer_fk",
+    }).onDelete("restrict"),
+    unique("attachments_media_unique").on(t.organizationId, t.mediaReferenceId),
+    unique("attachments_object_key_unique").on(t.objectKey),
+    index("attachments_review_queue_idx").on(t.organizationId, t.status, t.createdAt),
+    check(
+      "attachments_values_check",
+      sql`${t.sizeBytes} > 0 and length(${t.objectKey}) > 0 and length(${t.sha256}) = 64`,
+    ),
+    check(
+      "attachments_review_check",
+      sql`(${t.status} = 'QUARANTINED' and ${t.reviewedByUserId} is null and ${t.reviewedAt} is null) or (${t.status} <> 'QUARANTINED' and ${t.reviewedByUserId} is not null and ${t.reviewedAt} is not null)`,
+    ),
+    check(
+      "attachments_rejection_check",
+      sql`(${t.status} = 'REJECTED' and ${t.rejectionReason} is not null) or (${t.status} <> 'REJECTED' and ${t.rejectionReason} is null)`,
+    ),
   ],
 );
 
