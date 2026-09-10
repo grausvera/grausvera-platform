@@ -1,7 +1,7 @@
 import { sql } from "drizzle-orm";
 import {
-  check,
   boolean,
+  check,
   customType,
   foreignKey,
   index,
@@ -89,6 +89,15 @@ export const providerDeliveryStatus = pgEnum("provider_delivery_status", [
   "FAILED",
   "DELETED",
 ]);
+export const consentPurpose = pgEnum("consent_purpose", ["DISCOVERY"]);
+export const consentAction = pgEnum("consent_action", ["ACCEPTED", "REJECTED", "REVOKED"]);
+export const consentScope = pgEnum("consent_scope", ["PROJECT_DISCOVERY"]);
+export const consentRequestStatus = pgEnum("consent_request_status", [
+  "PENDING",
+  "COMPLETED",
+  "EXPIRED",
+  "CANCELLED",
+]);
 const bytea = customType<{ data: Buffer; driverData: Buffer }>({ dataType: () => "bytea" });
 
 export const organizations = pgTable(
@@ -149,6 +158,7 @@ export const contactPoints = pgTable(
       name: "contact_points_person_membership_fk",
     }).onDelete("restrict"),
     unique("contact_points_membership_unique").on(t.organizationId, t.id),
+    unique("contact_points_person_membership_unique").on(t.organizationId, t.personId, t.id),
     uniqueIndex("contact_points_fingerprint_unique").on(t.organizationId, t.kind, t.fingerprint),
     uniqueIndex("contact_points_provider_external_unique")
       .on(t.organizationId, t.kind, t.provider, t.externalId)
@@ -351,6 +361,9 @@ export const messages = pgTable(
     providerOccurredAt: timestamp("provider_occurred_at", { withTimezone: true }).notNull(),
     receivedAt: timestamp("received_at", { withTimezone: true }).defaultNow().notNull(),
     processingStatus: messageProcessingStatus("processing_status").default("RECEIVED").notNull(),
+    senderPersonId: uuid("sender_person_id"),
+    senderContactPointId: uuid("sender_contact_point_id"),
+    replyToProviderMessageId: text("reply_to_provider_message_id"),
   },
   (t) => [
     foreignKey({
@@ -368,13 +381,22 @@ export const messages = pgTable(
       foreignColumns: [providerConnections.organizationId, providerConnections.id],
       name: "messages_connection_membership_fk",
     }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.organizationId, t.senderPersonId, t.senderContactPointId],
+      foreignColumns: [contactPoints.organizationId, contactPoints.personId, contactPoints.id],
+      name: "messages_sender_contact_fk",
+    }).onDelete("restrict"),
     unique("messages_provider_unique").on(t.providerConnectionId, t.providerMessageId),
+    unique("messages_case_membership_unique").on(t.organizationId, t.caseId, t.id),
     index("messages_conversation_order_idx").on(
       t.organizationId,
       t.conversationId,
       t.providerOccurredAt,
       t.receivedAt,
     ),
+    index("messages_reply_idx")
+      .on(t.providerConnectionId, t.replyToProviderMessageId)
+      .where(sql`${t.replyToProviderMessageId} is not null`),
   ],
 );
 
@@ -478,3 +500,217 @@ export const messageStatusObservations = pgTable("message_status_observations", 
     .references(() => inboxEventItems.id),
   createdAt,
 });
+
+export const consentPolicies = pgTable(
+  "consent_policies",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "restrict" }),
+    purpose: consentPurpose("purpose").notNull(),
+    channel: contactKind("channel").notNull(),
+    locale: text("locale").notNull(),
+    version: integer("version").notNull(),
+    noticeText: text("notice_text").notNull(),
+    noticeHash: text("notice_hash").notNull(),
+    scope: consentScope("scope").default("PROJECT_DISCOVERY").notNull(),
+    effectiveAt: timestamp("effective_at", { withTimezone: true }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    createdAt,
+  },
+  (t) => [
+    unique("consent_policies_identity_unique").on(
+      t.organizationId,
+      t.id,
+      t.purpose,
+      t.version,
+      t.noticeHash,
+      t.channel,
+      t.locale,
+      t.scope,
+    ),
+    unique("consent_policies_version_unique").on(
+      t.organizationId,
+      t.purpose,
+      t.channel,
+      t.locale,
+      t.version,
+    ),
+    index("consent_policies_effective_idx").on(
+      t.organizationId,
+      t.purpose,
+      t.channel,
+      t.locale,
+      t.effectiveAt,
+    ),
+    check("consent_policies_whatsapp_only", sql`${t.channel} = 'WHATSAPP'`),
+    check("consent_policies_version_positive", sql`${t.version} > 0`),
+  ],
+);
+
+export const consentRecords = pgTable(
+  "consent_records",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id").notNull(),
+    caseId: uuid("case_id").notNull(),
+    personId: uuid("person_id").notNull(),
+    contactPointId: uuid("contact_point_id").notNull(),
+    policyId: uuid("policy_id").notNull(),
+    purpose: consentPurpose("purpose").notNull(),
+    action: consentAction("action").notNull(),
+    sourceMessageId: uuid("source_message_id").notNull(),
+    policyVersion: integer("policy_version").notNull(),
+    noticeHash: text("notice_hash").notNull(),
+    channel: contactKind("channel").notNull(),
+    locale: text("locale").notNull(),
+    scope: consentScope("scope").default("PROJECT_DISCOVERY").notNull(),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+    validUntil: timestamp("valid_until", { withTimezone: true }),
+    idempotencyKey: text("idempotency_key").notNull(),
+    createdAt,
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.organizationId, t.caseId],
+      foreignColumns: [prospectCases.organizationId, prospectCases.id],
+      name: "consent_records_case_membership_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.organizationId, t.personId],
+      foreignColumns: [people.organizationId, people.id],
+      name: "consent_records_person_membership_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.organizationId, t.personId, t.contactPointId],
+      foreignColumns: [contactPoints.organizationId, contactPoints.personId, contactPoints.id],
+      name: "consent_records_contact_person_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [
+        t.organizationId,
+        t.policyId,
+        t.purpose,
+        t.policyVersion,
+        t.noticeHash,
+        t.channel,
+        t.locale,
+        t.scope,
+      ],
+      foreignColumns: [
+        consentPolicies.organizationId,
+        consentPolicies.id,
+        consentPolicies.purpose,
+        consentPolicies.version,
+        consentPolicies.noticeHash,
+        consentPolicies.channel,
+        consentPolicies.locale,
+        consentPolicies.scope,
+      ],
+      name: "consent_records_policy_exact_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.organizationId, t.caseId, t.sourceMessageId],
+      foreignColumns: [messages.organizationId, messages.caseId, messages.id],
+      name: "consent_records_source_case_fk",
+    }).onDelete("restrict"),
+    unique("consent_records_idempotency_unique").on(t.organizationId, t.caseId, t.idempotencyKey),
+    unique("consent_records_source_unique").on(t.organizationId, t.sourceMessageId, t.purpose),
+    index("consent_records_current_idx").on(
+      t.organizationId,
+      t.caseId,
+      t.personId,
+      t.purpose,
+      t.occurredAt,
+    ),
+    check("consent_records_whatsapp_only", sql`${t.channel} = 'WHATSAPP'`),
+    check("consent_records_version_positive", sql`${t.policyVersion} > 0`),
+  ],
+);
+
+export const consentRequests = pgTable(
+  "consent_requests",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id").notNull(),
+    caseId: uuid("case_id").notNull(),
+    personId: uuid("person_id").notNull(),
+    contactPointId: uuid("contact_point_id").notNull(),
+    policyId: uuid("policy_id").notNull(),
+    purpose: consentPurpose("purpose").notNull(),
+    policyVersion: integer("policy_version").notNull(),
+    noticeHash: text("notice_hash").notNull(),
+    channel: contactKind("channel").notNull(),
+    locale: text("locale").notNull(),
+    scope: consentScope("scope").notNull(),
+    sourceMessageId: uuid("source_message_id").notNull(),
+    requestMessageId: uuid("request_message_id").notNull(),
+    outboxEventId: uuid("outbox_event_id")
+      .notNull()
+      .references(() => outboxEvents.id, { onDelete: "restrict" }),
+    status: consentRequestStatus("status").default("PENDING").notNull(),
+    version,
+    idempotencyKey: text("idempotency_key").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.organizationId, t.caseId],
+      foreignColumns: [prospectCases.organizationId, prospectCases.id],
+      name: "consent_requests_case_membership_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.organizationId, t.personId, t.contactPointId],
+      foreignColumns: [contactPoints.organizationId, contactPoints.personId, contactPoints.id],
+      name: "consent_requests_contact_person_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [
+        t.organizationId,
+        t.policyId,
+        t.purpose,
+        t.policyVersion,
+        t.noticeHash,
+        t.channel,
+        t.locale,
+        t.scope,
+      ],
+      foreignColumns: [
+        consentPolicies.organizationId,
+        consentPolicies.id,
+        consentPolicies.purpose,
+        consentPolicies.version,
+        consentPolicies.noticeHash,
+        consentPolicies.channel,
+        consentPolicies.locale,
+        consentPolicies.scope,
+      ],
+      name: "consent_requests_policy_exact_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.organizationId, t.caseId, t.sourceMessageId],
+      foreignColumns: [messages.organizationId, messages.caseId, messages.id],
+      name: "consent_requests_source_case_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.organizationId, t.caseId, t.requestMessageId],
+      foreignColumns: [messages.organizationId, messages.caseId, messages.id],
+      name: "consent_requests_message_case_fk",
+    }).onDelete("restrict"),
+    unique("consent_requests_logical_unique").on(
+      t.organizationId,
+      t.caseId,
+      t.personId,
+      t.policyId,
+    ),
+    unique("consent_requests_idempotency_unique").on(t.organizationId, t.idempotencyKey),
+    unique("consent_requests_outbox_unique").on(t.outboxEventId),
+    unique("consent_requests_message_unique").on(t.requestMessageId),
+    index("consent_requests_pending_idx").on(t.organizationId, t.status, t.expiresAt),
+    check("consent_requests_whatsapp_only", sql`${t.channel} = 'WHATSAPP'`),
+    check("consent_requests_version_positive", sql`${t.version} > 0`),
+  ],
+);

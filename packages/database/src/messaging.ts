@@ -185,8 +185,13 @@ export class MessagingStore {
           continue;
         }
 
-        const candidates = await client.query<{ case_id: string; conversation_id: string }>(
-          `SELECT DISTINCT c.case_id, c.id AS conversation_id
+        const candidates = await client.query<{
+          case_id: string;
+          conversation_id: string;
+          person_id: string;
+          contact_point_id: string;
+        }>(
+          `SELECT DISTINCT c.case_id, c.id AS conversation_id, cp.person_id, cp.id AS contact_point_id
            FROM contact_points cp
            JOIN case_participants p ON p.organization_id = cp.organization_id AND p.person_id = cp.person_id
            JOIN conversations c ON c.organization_id = p.organization_id AND c.case_id = p.case_id
@@ -212,8 +217,9 @@ export class MessagingStore {
         await client.query(
           `INSERT INTO messages
             (organization_id, case_id, conversation_id, provider_connection_id, direction,
-             provider_message_id, message_type, content_bytes, content_hash, provider_occurred_at)
-           VALUES ($1, $2, $3, $4, 'INBOUND', $5, $6, $7, $8, $9)
+             provider_message_id, message_type, content_bytes, content_hash, provider_occurred_at,
+             sender_person_id, sender_contact_point_id, reply_to_provider_message_id)
+           VALUES ($1, $2, $3, $4, 'INBOUND', $5, $6, $7, $8, $9, $10, $11, $12)
            ON CONFLICT (provider_connection_id, provider_message_id) DO NOTHING`,
           [
             context.organization_id,
@@ -225,6 +231,9 @@ export class MessagingStore {
             content,
             content ? createHash("sha256").update(content).digest("hex") : null,
             item.providerOccurredAt,
+            candidate.person_id,
+            candidate.contact_point_id,
+            item.replyToProviderMessageId,
           ],
         );
         await client.query(
