@@ -18,6 +18,14 @@ export async function generateMetadata({ params }: PublicationPageProps): Promis
     ? {
         title: `${publication.metadata.title} | grausvera`,
         description: publication.metadata.summary,
+        openGraph: {
+          type: "article",
+          locale: "es_PE",
+          siteName: "grausvera",
+          title: publication.metadata.title,
+          description: publication.metadata.summary,
+          publishedTime: publication.metadata.publishedAt,
+        },
       }
     : { title: "Publicación no encontrada | grausvera" };
 }
@@ -54,7 +62,13 @@ export default async function PublicationPage({ params }: PublicationPageProps) 
             </ul>
           </section>
         ) : null}
-        <ContactSection />
+        <ContactSection
+          context={{
+            kind: "publication",
+            slug: publication.metadata.slug,
+            title: publication.metadata.title,
+          }}
+        />
       </article>
     </main>
   );

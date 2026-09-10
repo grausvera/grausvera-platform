@@ -117,20 +117,47 @@ export const generalCtaSchema = z
   })
   .strict();
 
+export const publicCtaContextSchema = z
+  .object({
+    kind: z.enum(["page", "service", "project", "publication"]),
+    slug: slugSchema,
+    title: z.string().trim().min(1).max(120),
+  })
+  .strict();
+
 export const GENERAL_WHATSAPP_MESSAGE =
   "Hola, conocí grausvera y quiero conversar sobre un proyecto digital.";
 
-export function loadGeneralCta(source: Record<string, string | undefined>): GeneralCta | undefined {
+export function buildContextualWhatsAppMessage(context: PublicCtaContext): string {
+  const value = publicCtaContextSchema.parse(context);
+
+  switch (value.kind) {
+    case "service":
+      return "Hola, conocí los servicios de grausvera y quiero conversar sobre un proyecto digital.";
+    case "project":
+      return `Hola, vi el proyecto «${value.title}» en grausvera y quiero conversar sobre algo similar.`;
+    case "publication":
+      return `Hola, leí «${value.title}» en grausvera y quiero conversar sobre un proyecto digital.`;
+    default:
+      return GENERAL_WHATSAPP_MESSAGE;
+  }
+}
+
+export function loadGeneralCta(
+  source: Record<string, string | undefined>,
+  context?: PublicCtaContext,
+): GeneralCta | undefined {
   const result = generalCtaSchema.safeParse({
     whatsappUsername: source.PUBLIC_WHATSAPP_USERNAME,
     email: source.PUBLIC_CONTACT_EMAIL,
-    message: GENERAL_WHATSAPP_MESSAGE,
+    message: context ? buildContextualWhatsAppMessage(context) : GENERAL_WHATSAPP_MESSAGE,
   });
 
   return result.success ? result.data : undefined;
 }
 
 export type GeneralCta = z.infer<typeof generalCtaSchema>;
+export type PublicCtaContext = z.infer<typeof publicCtaContextSchema>;
 export type PublicContentMetadata = z.infer<typeof publicContentMetadataSchema>;
 export type PublicRoute = z.infer<typeof publicRouteSchema>;
 

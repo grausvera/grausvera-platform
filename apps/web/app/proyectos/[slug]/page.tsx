@@ -20,7 +20,17 @@ export async function generateMetadata({ params }: ProjectPageProps): Promise<Me
   const project = await getPublicProject((await params).slug);
 
   return project
-    ? { title: `${project.metadata.title} | grausvera`, description: project.metadata.summary }
+    ? {
+        title: `${project.metadata.title} | grausvera`,
+        description: project.metadata.summary,
+        openGraph: {
+          type: "website",
+          locale: "es_PE",
+          siteName: "grausvera",
+          title: project.metadata.title,
+          description: project.metadata.summary,
+        },
+      }
     : { title: "Proyecto no encontrado | grausvera" };
 }
 
@@ -51,7 +61,13 @@ export default async function ProjectPage({ params }: ProjectPageProps) {
             </ul>
           </section>
         ) : null}
-        <ContactSection />
+        <ContactSection
+          context={{
+            kind: "project",
+            slug: project.metadata.slug,
+            title: project.metadata.title,
+          }}
+        />
       </article>
     </main>
   );

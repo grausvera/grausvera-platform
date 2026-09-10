@@ -1,8 +1,8 @@
-import { loadGeneralCta } from "@grausvera/public-content";
+import { loadGeneralCta, type PublicCtaContext } from "@grausvera/public-content";
 import { PublicCta } from "./public-cta";
 
-export function ContactSection() {
-  const cta = loadGeneralCta(process.env);
+export function ContactSection({ context }: { context?: PublicCtaContext }) {
+  const cta = loadGeneralCta(process.env, context);
 
   return (
     <section aria-labelledby="contact-title" className="contact-section">

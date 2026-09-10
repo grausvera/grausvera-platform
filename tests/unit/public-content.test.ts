@@ -1,11 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildContextualWhatsAppMessage,
   buildWhatsAppUrl,
   GENERAL_WHATSAPP_MESSAGE,
   generalCtaSchema,
   loadGeneralCta,
   projectMetadataSchema,
   publicContentMetadataSchema,
+  publicCtaContextSchema,
   publicMarkdownSchema,
   publicRouteSchema,
   readPublishedContent,
@@ -86,6 +88,35 @@ describe("public content contracts", () => {
       message: GENERAL_WHATSAPP_MESSAGE,
     });
     expect(loadGeneralCta({})).toBeUndefined();
+  });
+
+  it("builds exact messages from reviewed public context only", () => {
+    expect(
+      buildContextualWhatsAppMessage({
+        kind: "project",
+        slug: "demo-publica",
+        title: "Demo pública",
+      }),
+    ).toBe(
+      "Hola, vi el proyecto «Demo pública» en grausvera y quiero conversar sobre algo similar.",
+    );
+    expect(
+      buildContextualWhatsAppMessage({
+        kind: "publication",
+        slug: "nota-publica",
+        title: "Una nota pública",
+      }),
+    ).toBe(
+      "Hola, leí «Una nota pública» en grausvera y quiero conversar sobre un proyecto digital.",
+    );
+    expect(() =>
+      publicCtaContextSchema.parse({
+        kind: "project",
+        slug: "demo-publica",
+        title: "Demo pública",
+        token: "private-token",
+      }),
+    ).toThrow();
   });
 
   it("reads only reviewed and published Markdown from paired metadata", async () => {

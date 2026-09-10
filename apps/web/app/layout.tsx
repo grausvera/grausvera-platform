@@ -7,6 +7,18 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "grausvera",
   description: "Experiencia pública de grausvera.",
+  applicationName: "grausvera",
+  creator: "grausvera",
+  publisher: "grausvera",
+  referrer: "origin-when-cross-origin",
+  robots: { index: true, follow: true },
+  openGraph: {
+    type: "website",
+    locale: "es_PE",
+    siteName: "grausvera",
+    title: "grausvera",
+    description: "Experiencia pública de grausvera.",
+  },
 };
 
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
