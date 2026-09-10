@@ -1,0 +1,14 @@
+{
+  "kind": "project",
+  "slug": "grausvera-platform",
+  "title": "grausvera platform",
+  "summary": "Plataforma propia en construcción para presentar trabajo, iniciar conversaciones y acompañar proyectos con claridad.",
+  "status": "published",
+  "sourceIds": ["SRC-GP-PLATFORM-REPO"],
+  "reviewedAt": "2026-09-10T00:29:37.000Z",
+  "publishedAt": "2026-09-10T00:29:37.000Z",
+  "projectStatus": "building",
+  "links": {
+    "repository": "https://github.com/grausvera/grausvera-platform"
+  }
+}

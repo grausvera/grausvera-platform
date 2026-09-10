@@ -1,0 +1,10 @@
+{
+  "kind": "publication",
+  "slug": "nota-en-revision",
+  "title": "Nota en revisión",
+  "summary": "Este fixture debe permanecer oculto.",
+  "status": "review",
+  "sourceIds": [],
+  "relatedProjectSlugs": [],
+  "relatedServiceSlugs": []
+}

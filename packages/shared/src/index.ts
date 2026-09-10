@@ -1,1 +1,1 @@
-export const platformName = "Grausvera Platform";
+export const platformName = "grausvera platform";

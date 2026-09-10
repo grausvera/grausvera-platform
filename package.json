@@ -13,7 +13,7 @@
     "packages/*"
   ],
   "scripts": {
-    "build": "npm run build --workspace @grausvera/database && npm run build --workspace @grausvera/operations && npm run build --workspace @grausvera/shared && npm run build --workspace @grausvera/web && npm run build --workspace @grausvera/worker",
+    "build": "npm run build --workspace @grausvera/database && npm run build --workspace @grausvera/operations && npm run build --workspace @grausvera/public-content && npm run build --workspace @grausvera/shared && npm run build --workspace @grausvera/web && npm run build --workspace @grausvera/worker",
     "db:migrate": "npm run build --workspace @grausvera/database && node --env-file-if-exists=.env packages/database/dist/migrate.js",
     "format:check": "biome format .",
     "job:enqueue:synthetic": "npm run build --workspace @grausvera/worker && npm run enqueue:synthetic --workspace @grausvera/worker",
@@ -25,7 +25,7 @@
     "test:recovery": "node scripts/pending-suite.mjs test:recovery TASK-GP-061",
     "test:security": "node scripts/pending-suite.mjs test:security TASK-GP-020",
     "test:unit": "vitest run",
-    "typecheck": "npm run typecheck --workspace @grausvera/database && npm run typecheck --workspace @grausvera/operations && npm run typecheck --workspace @grausvera/shared && npm run typecheck --workspace @grausvera/web && npm run typecheck --workspace @grausvera/worker"
+    "typecheck": "npm run typecheck --workspace @grausvera/database && npm run typecheck --workspace @grausvera/operations && npm run typecheck --workspace @grausvera/public-content && npm run typecheck --workspace @grausvera/shared && npm run typecheck --workspace @grausvera/web && npm run typecheck --workspace @grausvera/worker"
   },
   "devDependencies": {
     "@biomejs/biome": "2.5.12",

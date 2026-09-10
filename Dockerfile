@@ -6,6 +6,7 @@ COPY apps/web/package.json apps/web/package.json
 COPY apps/worker/package.json apps/worker/package.json
 COPY packages/database/package.json packages/database/package.json
 COPY packages/operations/package.json packages/operations/package.json
+COPY packages/public-content/package.json packages/public-content/package.json
 COPY packages/shared/package.json packages/shared/package.json
 RUN npm ci --ignore-scripts
 
