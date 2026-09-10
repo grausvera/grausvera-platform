@@ -5,8 +5,8 @@ import { PublicNavigation } from "../components/public-navigation";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "Grausvera",
-  description: "Experiencia pública de Grausvera.",
+  title: "grausvera",
+  description: "Experiencia pública de grausvera.",
 };
 
 export default function RootLayout({ children }: Readonly<{ children: ReactNode }>) {
@@ -17,14 +17,14 @@ export default function RootLayout({ children }: Readonly<{ children: ReactNode 
           Saltar al contenido
         </a>
         <header className="site-header">
-          <Link className="brand" href="/" aria-label="Grausvera, inicio">
+          <Link className="brand" href="/" aria-label="grausvera, inicio">
             grausvera
           </Link>
           <PublicNavigation />
         </header>
         {children}
         <footer className="site-footer">
-          <p>Grausvera</p>
+          <p>grausvera</p>
         </footer>
       </body>
     </html>

@@ -96,6 +96,31 @@ describe("public content contracts", () => {
     expect(content[0]?.markdown).toContain("Contenido sintético");
   });
 
+  it("serves only published project fixtures with reviewed HTTPS links", async () => {
+    const projects = await readPublishedContent("tests/fixtures/public-projects");
+
+    expect(projects).toHaveLength(1);
+    expect(projects[0]?.metadata).toMatchObject({
+      kind: "project",
+      slug: "demo-sintetica",
+      projectStatus: "building",
+      links: { documentation: "https://example.com/docs" },
+    });
+    expect(projects[0]?.markdown).toContain("exclusivamente sintético");
+  });
+
+  it("serves only published publication fixtures with declared relationships", async () => {
+    const publications = await readPublishedContent("tests/fixtures/public-publications");
+
+    expect(publications).toHaveLength(1);
+    expect(publications[0]?.metadata).toMatchObject({
+      kind: "publication",
+      slug: "nota-sintetica",
+      relatedProjectSlugs: ["demo-sintetica"],
+    });
+    expect(publications[0]?.markdown).toContain("publicación sintética");
+  });
+
   it("rejects raw HTML and unsafe Markdown destinations", () => {
     expect(() => publicMarkdownSchema.parse("<script>alert('unsafe')</script>")).toThrow();
     expect(() => publicMarkdownSchema.parse("[destino](http://example.com)")).toThrow();

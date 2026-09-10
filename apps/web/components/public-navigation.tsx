@@ -9,6 +9,8 @@ interface NavigationItem {
 export const AVAILABLE_NAVIGATION = [
   { href: "/", label: "Inicio" },
   { href: "/servicios", label: "Servicios" },
+  { href: "/proyectos", label: "Proyectos" },
+  { href: "/publicaciones", label: "Publicaciones" },
   { href: "/acerca", label: "Acerca" },
 ] as const satisfies readonly NavigationItem[];
 

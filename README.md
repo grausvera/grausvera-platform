@@ -1,6 +1,6 @@
-# Grausvera Platform
+# grausvera platform
 
-Grausvera Platform is a modular TypeScript application with independently runnable web and worker
+grausvera platform is a modular TypeScript application with independently runnable web and worker
 processes. Product behavior is being built incrementally; the current repository contains the R1
 technical foundation only.
 

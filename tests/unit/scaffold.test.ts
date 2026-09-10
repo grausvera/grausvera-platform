@@ -3,6 +3,6 @@ import { platformName } from "../../packages/shared/src";
 
 describe("scaffold entries", () => {
   it("exports the shared platform identity", () => {
-    expect(platformName).toBe("Grausvera Platform");
+    expect(platformName).toBe("grausvera platform");
   });
 });

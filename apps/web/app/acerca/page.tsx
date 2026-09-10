@@ -4,8 +4,8 @@ import { PublicPage } from "../../components/public-page";
 import { getPublicPage } from "../../lib/public-pages";
 
 export const metadata: Metadata = {
-  title: "Acerca | Grausvera",
-  description: "Diseño y funcionalidad reciben el mismo cuidado en Grausvera.",
+  title: "Acerca | grausvera",
+  description: "Diseño y funcionalidad reciben el mismo cuidado en grausvera.",
 };
 
 export const dynamic = "force-dynamic";

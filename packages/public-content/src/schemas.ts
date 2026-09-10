@@ -118,7 +118,7 @@ export const generalCtaSchema = z
   .strict();
 
 export const GENERAL_WHATSAPP_MESSAGE =
-  "Hola, conocí Grausvera y quiero conversar sobre un proyecto digital.";
+  "Hola, conocí grausvera y quiero conversar sobre un proyecto digital.";
 
 export function loadGeneralCta(source: Record<string, string | undefined>): GeneralCta | undefined {
   const result = generalCtaSchema.safeParse({

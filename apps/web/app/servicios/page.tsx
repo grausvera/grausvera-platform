@@ -4,7 +4,7 @@ import { PublicPage } from "../../components/public-page";
 import { getPublicPage } from "../../lib/public-pages";
 
 export const metadata: Metadata = {
-  title: "Servicios | Grausvera",
+  title: "Servicios | grausvera",
   description: "Productos digitales a medida, construidos desde el problema y el contexto.",
 };
 

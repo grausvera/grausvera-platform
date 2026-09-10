@@ -1,0 +1,12 @@
+{
+  "kind": "publication",
+  "slug": "construir-la-base",
+  "title": "Construir la base antes de ampliar la plataforma",
+  "summary": "Por qué grausvera platform comenzó con una base técnica reproducible antes de incorporar más capacidades.",
+  "status": "published",
+  "sourceIds": ["SRC-GP-PLATFORM-REPO"],
+  "reviewedAt": "2026-09-10T00:29:37.000Z",
+  "publishedAt": "2026-09-10T00:29:37.000Z",
+  "relatedProjectSlugs": ["grausvera-platform"],
+  "relatedServiceSlugs": []
+}

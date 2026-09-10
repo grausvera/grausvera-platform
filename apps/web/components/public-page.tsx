@@ -7,7 +7,7 @@ export function PublicPage({ content }: { content: PublicContentItem }) {
     <main className="page-shell" id="contenido" tabIndex={-1}>
       <article className="public-page">
         <header className="page-heading">
-          <p className="eyebrow">Grausvera</p>
+          <p className="eyebrow">grausvera</p>
           <h1>{content.metadata.title}</h1>
           <p className="lede">{content.metadata.summary}</p>
         </header>
