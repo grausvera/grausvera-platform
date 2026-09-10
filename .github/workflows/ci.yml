@@ -51,6 +51,12 @@ jobs:
         run: npm run typecheck
       - name: Run unit smoke tests
         run: npm run test:unit
+      - name: Run database integration tests
+        run: npm run test:integration
+      - name: Run provider contract tests
+        run: npm run test:contracts
+      - name: Run security tests
+        run: npm run test:security
       - name: Build
         run: npm run build
       - name: Build OCI image

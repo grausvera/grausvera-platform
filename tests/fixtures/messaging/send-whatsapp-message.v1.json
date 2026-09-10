@@ -1,0 +1,10 @@
+{
+  "messaging_product": "whatsapp",
+  "recipient_type": "individual",
+  "to": "synthetic-recipient",
+  "type": "text",
+  "text": {
+    "preview_url": false,
+    "body": "Synthetic service message"
+  }
+}

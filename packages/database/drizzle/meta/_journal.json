@@ -8,6 +8,62 @@
       "when": 1788921464827,
       "tag": "0000_foundation",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "7",
+      "when": 1789008000000,
+      "tag": "0001_private_roots",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "7",
+      "when": 1789094400000,
+      "tag": "0002_messaging_delivery",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "7",
+      "when": 1789180800000,
+      "tag": "0003_inbound_reconciliation",
+      "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1789267200000,
+      "tag": "0004_consent_policy",
+      "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1789353600000,
+      "tag": "0005_consent_request",
+      "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1789440000000,
+      "tag": "0006_consent_response",
+      "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1789526400000,
+      "tag": "0007_conversation_intervention",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1789612800000,
+      "tag": "0008_operator_console",
+      "breakpoints": true
     }
   ]
 }

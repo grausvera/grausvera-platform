@@ -255,6 +255,88 @@ h1 {
   color: var(--color-paper);
 }
 
+.console-shell {
+  max-width: 58rem;
+}
+
+.console-shell h1 {
+  font-size: clamp(2.5rem, 7vw, 5rem);
+}
+
+.console-panel {
+  max-width: 34rem;
+}
+
+.console-heading,
+.console-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-4);
+  justify-content: space-between;
+}
+
+.console-form {
+  display: grid;
+  gap: var(--space-4);
+  margin-top: var(--space-8);
+}
+
+.console-form label {
+  display: grid;
+  gap: var(--space-2);
+}
+
+.console-form input,
+.console-form textarea {
+  background: white;
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-small);
+  font: inherit;
+  padding: var(--space-3);
+}
+
+.console-form button,
+.console-actions button,
+.console-link-button {
+  background: var(--color-ink);
+  border: 1px solid var(--color-ink);
+  border-radius: var(--radius-pill);
+  color: var(--color-paper);
+  cursor: pointer;
+  font: inherit;
+  padding: var(--space-3) var(--space-6);
+}
+
+.console-case-list,
+.console-messages {
+  display: grid;
+  gap: var(--space-4);
+  list-style: none;
+  padding: 0;
+}
+
+.console-case-list li,
+.console-messages li,
+.console-secret {
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-small);
+  display: grid;
+  gap: var(--space-2);
+  overflow-wrap: anywhere;
+  padding: var(--space-4);
+}
+
+.console-case-list small,
+.console-messages small {
+  color: var(--color-muted);
+}
+
+.console-messages li[data-direction="OUTBOUND"] {
+  background: var(--color-sage);
+  margin-left: var(--space-8);
+}
+
 .site-footer {
   border-top: 1px solid var(--color-line);
   color: var(--color-muted);
