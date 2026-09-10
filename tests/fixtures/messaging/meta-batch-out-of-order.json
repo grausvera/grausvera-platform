@@ -1,0 +1,41 @@
+{
+  "object": "whatsapp_business_account",
+  "entry": [
+    {
+      "id": "synthetic-account",
+      "changes": [
+        {
+          "field": "messages",
+          "value": {
+            "messages": [
+              {
+                "from": "synthetic-sender",
+                "id": "wamid.inbound-text",
+                "timestamp": "1789000002",
+                "type": "text",
+                "text": { "body": "Proyecto sintético" }
+              },
+              {
+                "from": "synthetic-sender",
+                "id": "wamid.inbound-document",
+                "timestamp": "1789000001",
+                "type": "document",
+                "document": {
+                  "id": "media-reference-only",
+                  "mime_type": "application/pdf",
+                  "filename": "synthetic.pdf",
+                  "sha256": "synthetic-hash"
+                }
+              }
+            ],
+            "statuses": [
+              { "id": "wamid.outbound", "status": "read", "timestamp": "1789000005" },
+              { "id": "wamid.outbound", "status": "sent", "timestamp": "1789000003" },
+              { "id": "wamid.outbound", "status": "delivered", "timestamp": "1789000004" }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

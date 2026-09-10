@@ -11,6 +11,13 @@ describe("operational foundation", () => {
         NODE_ENV: "test",
       }),
     ).toMatchObject({ APP_ROLE: "worker", NODE_ENV: "test", PORT: 3000 });
+    expect(() =>
+      loadConfig({
+        APP_ROLE: "worker",
+        DATABASE_URL: "postgresql://local:local@127.0.0.1:5432/local",
+        MESSAGING_EMITTER_ENABLED: "true",
+      }),
+    ).toThrow("Meta messaging configuration is required");
   });
 
   it("drops secrets and personal data from structured logs", () => {
