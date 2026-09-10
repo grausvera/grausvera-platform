@@ -144,7 +144,7 @@ test("keeps every public route indexable, linked, and free of internal data", as
   }
 });
 
-test("keeps text contrast and layout usable at mobile zoom", async ({ page }) => {
+test("keeps text contrast and layout usable at 200% text size", async ({ page }) => {
   await page.setViewportSize({ width: 640, height: 900 });
   await page.goto("/proyectos/grausvera-platform");
 
@@ -169,7 +169,7 @@ test("keeps text contrast and layout usable at mobile zoom", async ({ page }) =>
   expect(Math.min(...contrastRatios)).toBeGreaterThanOrEqual(4.5);
 
   await page.locator("html").evaluate((element) => {
-    element.style.zoom = "2";
+    element.style.fontSize = "200%";
   });
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBeLessThanOrEqual(640);
 });
