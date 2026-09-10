@@ -70,4 +70,20 @@ describe("messaging ports", () => {
       errorCode: "meta_response_unknown",
     });
   });
+
+  it("revalidates a claimed effect and does not call the provider after cancellation", async () => {
+    const store = {
+      claimNext: vi.fn().mockResolvedValue(message),
+      authorizeDispatch: vi.fn().mockResolvedValue(false),
+      finish: vi.fn(),
+    };
+    const port = new FakeMessagingPort();
+    const dispatcher = new OutboxDispatcher(store as never, port);
+    dispatcher.setEnabled(true);
+
+    expect(await dispatcher.dispatchOne()).toBe("cancelled");
+    expect(store.authorizeDispatch).toHaveBeenCalledWith(message);
+    expect(store.finish).not.toHaveBeenCalled();
+    expect(port.sent).toHaveLength(0);
+  });
 });

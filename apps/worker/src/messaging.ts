@@ -74,7 +74,7 @@ export class OutboxDispatcher {
     this.#enabled = enabled;
   }
 
-  async dispatchOne(): Promise<"disabled" | "idle" | DeliveryResult> {
+  async dispatchOne(): Promise<"disabled" | "idle" | "cancelled" | DeliveryResult> {
     if (!this.#enabled) return "disabled";
     const message = await this.store.claimNext();
     if (!message) return "idle";
@@ -86,6 +86,7 @@ export class OutboxDispatcher {
       });
       return "disabled";
     }
+    if (!(await this.store.authorizeDispatch(message))) return "cancelled";
     const result = await this.port.send(message);
     await this.store.finish(message, result);
     return result;

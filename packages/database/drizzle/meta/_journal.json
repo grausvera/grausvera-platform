@@ -50,6 +50,20 @@
       "when": 1789440000000,
       "tag": "0006_consent_response",
       "breakpoints": true
+    },
+    {
+      "idx": 7,
+      "version": "7",
+      "when": 1789526400000,
+      "tag": "0007_conversation_intervention",
+      "breakpoints": true
+    },
+    {
+      "idx": 8,
+      "version": "7",
+      "when": 1789612800000,
+      "tag": "0008_operator_console",
+      "breakpoints": true
     }
   ]
 }

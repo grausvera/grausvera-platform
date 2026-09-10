@@ -98,6 +98,10 @@ export const consentRequestStatus = pgEnum("consent_request_status", [
   "EXPIRED",
   "CANCELLED",
 ]);
+export const conversationInterventionKind = pgEnum("conversation_intervention_kind", [
+  "STOP",
+  "HUMAN_REQUEST",
+]);
 const bytea = customType<{ data: Buffer; driverData: Buffer }>({ dataType: () => "bytea" });
 
 export const organizations = pgTable(
@@ -318,6 +322,106 @@ export const auditEvents = pgTable(
   ],
 );
 
+export const authUsers = pgTable("user", {
+  id: text("id").primaryKey(),
+  name: text("name").notNull(),
+  email: text("email").notNull().unique(),
+  emailVerified: boolean("emailVerified").notNull(),
+  image: text("image"),
+  createdAt: timestamp("createdAt", { withTimezone: true }).defaultNow().notNull(),
+  updatedAt: timestamp("updatedAt", { withTimezone: true }).defaultNow().notNull(),
+  twoFactorEnabled: boolean("twoFactorEnabled"),
+});
+
+export const authSessions = pgTable(
+  "session",
+  {
+    id: text("id").primaryKey(),
+    expiresAt: timestamp("expiresAt", { withTimezone: true }).notNull(),
+    token: text("token").notNull().unique(),
+    createdAt: timestamp("createdAt", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt", { withTimezone: true }).notNull(),
+    ipAddress: text("ipAddress"),
+    userAgent: text("userAgent"),
+    userId: text("userId")
+      .notNull()
+      .references(() => authUsers.id, { onDelete: "cascade" }),
+  },
+  (t) => [index("session_userId_idx").on(t.userId)],
+);
+
+export const authAccounts = pgTable(
+  "account",
+  {
+    id: text("id").primaryKey(),
+    accountId: text("accountId").notNull(),
+    providerId: text("providerId").notNull(),
+    userId: text("userId")
+      .notNull()
+      .references(() => authUsers.id, { onDelete: "cascade" }),
+    accessToken: text("accessToken"),
+    refreshToken: text("refreshToken"),
+    idToken: text("idToken"),
+    accessTokenExpiresAt: timestamp("accessTokenExpiresAt", { withTimezone: true }),
+    refreshTokenExpiresAt: timestamp("refreshTokenExpiresAt", { withTimezone: true }),
+    scope: text("scope"),
+    password: text("password"),
+    createdAt: timestamp("createdAt", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt", { withTimezone: true }).notNull(),
+  },
+  (t) => [index("account_userId_idx").on(t.userId)],
+);
+
+export const authVerifications = pgTable(
+  "verification",
+  {
+    id: text("id").primaryKey(),
+    identifier: text("identifier").notNull(),
+    value: text("value").notNull(),
+    expiresAt: timestamp("expiresAt", { withTimezone: true }).notNull(),
+    createdAt: timestamp("createdAt", { withTimezone: true }).defaultNow().notNull(),
+    updatedAt: timestamp("updatedAt", { withTimezone: true }).defaultNow().notNull(),
+  },
+  (t) => [index("verification_identifier_idx").on(t.identifier)],
+);
+
+export const authTwoFactors = pgTable(
+  "twoFactor",
+  {
+    id: text("id").primaryKey(),
+    secret: text("secret").notNull(),
+    backupCodes: text("backupCodes").notNull(),
+    userId: text("userId")
+      .notNull()
+      .references(() => authUsers.id, { onDelete: "cascade" }),
+    verified: boolean("verified"),
+    failedVerificationCount: integer("failedVerificationCount"),
+    lockedUntil: timestamp("lockedUntil", { withTimezone: true }),
+  },
+  (t) => [index("twoFactor_secret_idx").on(t.secret), index("twoFactor_userId_idx").on(t.userId)],
+);
+
+export const operatorMemberships = pgTable(
+  "operator_memberships",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id")
+      .notNull()
+      .references(() => organizations.id, { onDelete: "restrict" }),
+    userId: text("user_id")
+      .notNull()
+      .references(() => authUsers.id, { onDelete: "cascade" }),
+    role: text("role").default("ENGINEER").notNull(),
+    active: boolean("active").default(true).notNull(),
+    createdAt,
+  },
+  (t) => [
+    unique("operator_memberships_unique").on(t.organizationId, t.userId),
+    index("operator_memberships_user_idx").on(t.userId, t.active),
+    check("operator_memberships_role_check", sql`${t.role} = 'ENGINEER'`),
+  ],
+);
+
 export const inboxEvents = pgTable(
   "inbox_events",
   {
@@ -400,6 +504,66 @@ export const messages = pgTable(
   ],
 );
 
+export const conversationInterventions = pgTable(
+  "conversation_interventions",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id").notNull(),
+    caseId: uuid("case_id").notNull(),
+    personId: uuid("person_id").notNull(),
+    contactPointId: uuid("contact_point_id").notNull(),
+    sourceMessageId: uuid("source_message_id").notNull(),
+    kind: conversationInterventionKind("kind").notNull(),
+    createdAt,
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.organizationId, t.caseId],
+      foreignColumns: [prospectCases.organizationId, prospectCases.id],
+      name: "conversation_interventions_case_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.organizationId, t.caseId, t.sourceMessageId],
+      foreignColumns: [messages.organizationId, messages.caseId, messages.id],
+      name: "conversation_interventions_source_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.organizationId, t.personId, t.contactPointId],
+      foreignColumns: [contactPoints.organizationId, contactPoints.personId, contactPoints.id],
+      name: "conversation_interventions_contact_fk",
+    }).onDelete("restrict"),
+    unique("conversation_interventions_source_unique").on(t.organizationId, t.sourceMessageId),
+    index("conversation_interventions_case_idx").on(t.organizationId, t.caseId, t.createdAt),
+  ],
+);
+
+export const operatorCaseAssignments = pgTable(
+  "operator_case_assignments",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id").notNull(),
+    caseId: uuid("case_id").notNull(),
+    userId: text("user_id").notNull(),
+    active: boolean("active").default(true).notNull(),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.organizationId, t.caseId],
+      foreignColumns: [prospectCases.organizationId, prospectCases.id],
+      name: "operator_case_assignments_case_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.organizationId, t.userId],
+      foreignColumns: [operatorMemberships.organizationId, operatorMemberships.userId],
+      name: "operator_case_assignments_membership_fk",
+    }).onDelete("restrict"),
+    unique("operator_case_assignments_unique").on(t.organizationId, t.caseId),
+    index("operator_case_assignments_user_idx").on(t.organizationId, t.userId, t.active),
+  ],
+);
+
 export const outboxEvents = pgTable(
   "outbox_events",
   {
@@ -419,6 +583,7 @@ export const outboxEvents = pgTable(
     lockedAt: timestamp("locked_at", { withTimezone: true }),
     providerExternalId: text("provider_external_id"),
     lastErrorCode: text("last_error_code"),
+    authorizedOperatorUserId: text("authorized_operator_user_id"),
     createdAt,
     updatedAt,
   },
@@ -427,6 +592,11 @@ export const outboxEvents = pgTable(
       columns: [t.organizationId, t.caseId],
       foreignColumns: [prospectCases.organizationId, prospectCases.id],
       name: "outbox_events_case_membership_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.organizationId, t.authorizedOperatorUserId],
+      foreignColumns: [operatorMemberships.organizationId, operatorMemberships.userId],
+      name: "outbox_events_operator_membership_fk",
     }).onDelete("restrict"),
     unique("outbox_events_idempotency_unique").on(t.organizationId, t.idempotencyKey),
     index("outbox_events_dispatch_idx").on(t.status, t.availableAt, t.createdAt),

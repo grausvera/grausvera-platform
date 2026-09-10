@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Pool } from "pg";
+import { applyConversationIntervention, classifyConversationIntervention } from "./intervention.js";
 
 export interface InboxReceipt {
   created: boolean;
@@ -214,13 +215,14 @@ export class MessagingStore {
         const candidate = candidates.rows[0];
         if (!candidate) throw new Error("association_candidate_unavailable");
         const content = item.textContent ? Buffer.from(item.textContent) : null;
-        await client.query(
+        const message = await client.query<{ id: string }>(
           `INSERT INTO messages
             (organization_id, case_id, conversation_id, provider_connection_id, direction,
              provider_message_id, message_type, content_bytes, content_hash, provider_occurred_at,
              sender_person_id, sender_contact_point_id, reply_to_provider_message_id)
            VALUES ($1, $2, $3, $4, 'INBOUND', $5, $6, $7, $8, $9, $10, $11, $12)
-           ON CONFLICT (provider_connection_id, provider_message_id) DO NOTHING`,
+           ON CONFLICT (provider_connection_id, provider_message_id) DO NOTHING
+           RETURNING id`,
           [
             context.organization_id,
             candidate.case_id,
@@ -236,6 +238,25 @@ export class MessagingStore {
             item.replyToProviderMessageId,
           ],
         );
+        const messageId = message.rows[0]?.id;
+        const interventionKind = item.textContent
+          ? classifyConversationIntervention(item.textContent)
+          : undefined;
+        if (messageId && interventionKind) {
+          await client.query(
+            `SELECT id FROM prospect_cases WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+            [context.organization_id, candidate.case_id],
+          );
+          await applyConversationIntervention(client, {
+            organizationId: context.organization_id,
+            caseId: candidate.case_id,
+            sourceMessageId: messageId,
+            personId: candidate.person_id,
+            contactPointId: candidate.contact_point_id,
+            correlationId: inboxEventId,
+            kind: interventionKind,
+          });
+        }
         await client.query(
           `UPDATE inbox_event_items SET status = 'PROCESSED', case_id = $2,
              conversation_id = $3, reason_code = NULL WHERE id = $1`,
@@ -440,6 +461,57 @@ export class MessagingStore {
       [lockedBefore],
     );
     return result.rowCount ?? 0;
+  }
+
+  async authorizeDispatch(item: OutboxMessage): Promise<boolean> {
+    const client = await this.#pool.connect();
+    try {
+      await client.query("BEGIN");
+      const allowed = await client.query(
+        `SELECT 1 FROM outbox_events o
+         JOIN prospect_cases pc ON pc.organization_id = o.organization_id AND pc.id = o.case_id
+         WHERE o.id = $1 AND o.organization_id = $2 AND o.case_id = $3
+           AND o.status = 'DISPATCHING'
+           AND (
+             (pc.status <> 'PAUSED'
+               AND coalesce(pc.next_action, '') NOT IN ('STOP_REQUESTED', 'HUMAN_REQUESTED'))
+             OR (
+               o.event_type = 'whatsapp.human.response.v1'
+               AND o.authorized_operator_user_id IS NOT NULL
+               AND EXISTS (
+                 SELECT 1 FROM operator_case_assignments a
+                 WHERE a.organization_id = o.organization_id AND a.case_id = o.case_id
+                   AND a.user_id = o.authorized_operator_user_id AND a.active
+               )
+             )
+           )
+         FOR UPDATE OF o`,
+        [item.id, item.organizationId, item.caseId],
+      );
+      if ((allowed.rowCount ?? 0) > 0) {
+        await client.query("COMMIT");
+        return true;
+      }
+      await client.query(
+        `UPDATE message_delivery_attempts SET completed_at = now(),
+           outcome = 'REJECTED_PERMANENT', error_code = 'dispatch_cancelled'
+         WHERE outbox_event_id = $1 AND attempt_number = $2 AND completed_at IS NULL`,
+        [item.id, item.attemptNumber],
+      );
+      await client.query(
+        `UPDATE outbox_events SET status = 'CANCELLED', locked_at = NULL,
+           last_error_code = 'dispatch_cancelled', updated_at = now()
+         WHERE id = $1 AND status = 'DISPATCHING'`,
+        [item.id],
+      );
+      await client.query("COMMIT");
+      return false;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
   }
 
   async finish(item: OutboxMessage, result: DeliveryResult): Promise<void> {
