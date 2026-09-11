@@ -22,6 +22,10 @@ export interface InterviewState {
   policyVersion: number;
   status: InterviewStatus;
   pendingQuestion: string | null;
+  activeSeconds: number;
+  activeStartedAt: Date | null;
+  pausedAt: Date | null;
+  pauseReason: string | null;
   version: number;
   topics: Array<InterviewPolicyTopic & { position: number; status: InterviewTopicStatus }>;
 }
@@ -236,6 +240,167 @@ export class InterviewStore {
     }
   }
 
+  async pause(input: {
+    organizationId: string;
+    caseId: string;
+    expectedVersion: number;
+    reason: string;
+    correlationId: string;
+  }): Promise<{ changed: boolean; interview: InterviewState }> {
+    const reason = input.reason.trim();
+    if (!reason || reason.length > 80) throw new Error("interview_pause_reason_invalid");
+    const client = await this.#pool.connect();
+    try {
+      await client.query("BEGIN");
+      const current = await this.#get(client, input.organizationId, input.caseId, true);
+      if (!current) throw new Error("interview_not_found");
+      if (current.pausedAt) {
+        await client.query("COMMIT");
+        return { changed: false, interview: current };
+      }
+      if (current.version !== input.expectedVersion) throw new Error("interview_version_conflict");
+      const caseState = await client.query<{ status: string; next_action: string | null }>(
+        `SELECT status, next_action FROM prospect_cases
+         WHERE organization_id = $1 AND id = $2 FOR UPDATE`,
+        [input.organizationId, input.caseId],
+      );
+      const state = caseState.rows[0];
+      if (state?.status !== "INTERVIEWING") throw new Error("interview_case_not_active");
+      await client.query(
+        `UPDATE case_quota_usages SET
+           active_seconds = active_seconds + greatest(0, floor(extract(epoch FROM (now() - last_accounted_at))))::integer,
+           last_accounted_at = now(), updated_at = now()
+         WHERE organization_id = $1 AND case_id = $2 AND window_ends_at > now()`,
+        [input.organizationId, input.caseId],
+      );
+      await client.query(
+        `UPDATE interviews SET
+           active_seconds = active_seconds + greatest(0, floor(extract(epoch FROM (now() - active_started_at))))::bigint,
+           active_started_at = NULL, paused_at = now(), pause_reason = $4,
+           resume_case_status = $5::case_status, resume_next_action = $6,
+           version = version + 1, updated_at = now()
+         WHERE organization_id = $1 AND case_id = $2 AND version = $3`,
+        [
+          input.organizationId,
+          input.caseId,
+          input.expectedVersion,
+          reason,
+          state.status,
+          state.next_action,
+        ],
+      );
+      await client.query(
+        `UPDATE prospect_cases SET status = 'PAUSED', next_action = 'INTERVIEW_PAUSED',
+           version = version + 1, updated_at = now()
+         WHERE organization_id = $1 AND id = $2`,
+        [input.organizationId, input.caseId],
+      );
+      await this.#audit(
+        client,
+        input.organizationId,
+        input.caseId,
+        current.id,
+        "interview.paused",
+        input.correlationId,
+      );
+      const interview = await this.#get(client, input.organizationId, input.caseId);
+      await client.query("COMMIT");
+      if (!interview) throw new Error("interview_not_found");
+      return { changed: true, interview };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async resume(input: {
+    organizationId: string;
+    caseId: string;
+    expectedVersion: number;
+    correlationId: string;
+  }): Promise<{ changed: boolean; interview: InterviewState }> {
+    const client = await this.#pool.connect();
+    try {
+      await client.query("BEGIN");
+      const current = await this.#get(client, input.organizationId, input.caseId, true);
+      if (!current) throw new Error("interview_not_found");
+      if (!current.pausedAt) {
+        await client.query("COMMIT");
+        return { changed: false, interview: current };
+      }
+      if (current.version !== input.expectedVersion) throw new Error("interview_version_conflict");
+      const state = await client.query<{
+        case_status: string;
+        next_action: string | null;
+        resume_case_status: string | null;
+        resume_next_action: string | null;
+      }>(
+        `SELECT pc.status AS case_status, pc.next_action, i.resume_case_status, i.resume_next_action
+         FROM interviews i JOIN prospect_cases pc
+           ON pc.organization_id = i.organization_id AND pc.id = i.case_id
+         WHERE i.organization_id = $1 AND i.case_id = $2 FOR UPDATE OF pc`,
+        [input.organizationId, input.caseId],
+      );
+      const paused = state.rows[0];
+      if (paused?.case_status !== "PAUSED" || paused.next_action !== "INTERVIEW_PAUSED")
+        throw new Error("interview_resume_not_authorized");
+      const consent = await client.query<{ action: string; valid_until: Date | null }>(
+        `SELECT action, valid_until FROM consent_records
+         WHERE organization_id = $1 AND case_id = $2 AND purpose = 'DISCOVERY'
+         ORDER BY occurred_at DESC, created_at DESC LIMIT 1`,
+        [input.organizationId, input.caseId],
+      );
+      const currentConsent = consent.rows[0];
+      if (
+        currentConsent?.action !== "ACCEPTED" ||
+        (currentConsent.valid_until && currentConsent.valid_until.getTime() <= Date.now())
+      )
+        throw new Error("interview_consent_required");
+      await client.query(
+        `UPDATE case_quota_usages SET last_accounted_at = now(), updated_at = now()
+         WHERE organization_id = $1 AND case_id = $2 AND window_ends_at > now()`,
+        [input.organizationId, input.caseId],
+      );
+      await client.query(
+        `UPDATE prospect_cases SET status = $3::case_status, next_action = $4,
+           version = version + 1, updated_at = now()
+         WHERE organization_id = $1 AND id = $2`,
+        [
+          input.organizationId,
+          input.caseId,
+          paused.resume_case_status ?? "INTERVIEWING",
+          paused.resume_next_action,
+        ],
+      );
+      await client.query(
+        `UPDATE interviews SET active_started_at = now(), paused_at = NULL,
+           pause_reason = NULL, resume_case_status = NULL, resume_next_action = NULL,
+           version = version + 1, updated_at = now()
+         WHERE organization_id = $1 AND case_id = $2 AND version = $3`,
+        [input.organizationId, input.caseId, input.expectedVersion],
+      );
+      await this.#audit(
+        client,
+        input.organizationId,
+        input.caseId,
+        current.id,
+        "interview.resumed",
+        input.correlationId,
+      );
+      const interview = await this.#get(client, input.organizationId, input.caseId);
+      await client.query("COMMIT");
+      if (!interview) throw new Error("interview_not_found");
+      return { changed: true, interview };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async #get(
     client: PoolClient,
     organizationId: string,
@@ -250,10 +415,15 @@ export class InterviewStore {
       policy_version: number;
       status: InterviewStatus;
       pending_question: string | null;
+      active_seconds: string;
+      active_started_at: Date | null;
+      paused_at: Date | null;
+      pause_reason: string | null;
       version: number;
     }>(
       `SELECT i.id, i.organization_id, i.case_id, i.policy_id,
-              p.version AS policy_version, i.status, i.pending_question, i.version
+              p.version AS policy_version, i.status, i.pending_question,
+              i.active_seconds, i.active_started_at, i.paused_at, i.pause_reason, i.version
        FROM interviews i JOIN interview_policies p ON p.id = i.policy_id
        WHERE i.organization_id = $1 AND i.case_id = $2
        ${lock ? "FOR UPDATE OF i" : ""}`,
@@ -279,6 +449,10 @@ export class InterviewStore {
       policyVersion: row.policy_version,
       status: row.status,
       pendingQuestion: row.pending_question,
+      activeSeconds: Number(row.active_seconds),
+      activeStartedAt: row.active_started_at,
+      pausedAt: row.paused_at,
+      pauseReason: row.pause_reason,
       version: row.version,
       topics: topics.rows.map((topic) => ({
         key: topic.topic_key,

@@ -213,4 +213,130 @@ describe("persistent interview", () => {
       ]),
     ).rejects.toThrow("interview policy is immutable");
   });
+
+  it("pauses and resumes the same interview without resetting time, question or budget", async () => {
+    const caseId = await createCase(true);
+    const created = await store.create({ organizationId, caseId, correlationId: randomUUID() });
+    const active = await store.update({
+      organizationId,
+      caseId,
+      expectedVersion: created.interview.version,
+      pendingQuestion: "¿Qué resultado debería producir el proyecto?",
+      correlationId: randomUUID(),
+    });
+    const budgetPolicyId = randomUUID();
+    const quotaPolicyId = randomUUID();
+    await pool.query(
+      `INSERT INTO budget_policies
+        (id, organization_id, version, alert_micros, hard_limit_micros, effective_at)
+       VALUES ($1, $2, 280, 500, 1000, now() + interval '1 day')`,
+      [budgetPolicyId, organizationId],
+    );
+    await pool.query(
+      `INSERT INTO budget_ledgers
+        (organization_id, case_id, policy_id, reserved_micros, consumed_micros, uncertain_micros)
+       VALUES ($1, $2, $3, 5, 23, 7)`,
+      [organizationId, caseId, budgetPolicyId],
+    );
+    await pool.query(
+      `INSERT INTO quota_policies
+        (id, organization_id, version, period_seconds, case_message_limit,
+         contact_message_limit, case_active_seconds_limit, effective_at)
+       VALUES ($1, $2, 280, 86400, 30, 60, 3600, now() + interval '1 day')`,
+      [quotaPolicyId, organizationId],
+    );
+    await pool.query(
+      `INSERT INTO case_quota_usages
+        (organization_id, case_id, policy_id, window_ends_at, active_seconds,
+         last_accounted_at)
+       VALUES ($1, $2, $3, now() + interval '1 day', 9, now() - interval '2 seconds')`,
+      [organizationId, caseId, quotaPolicyId],
+    );
+    await pool.query(
+      `UPDATE interviews SET active_seconds = 7,
+         active_started_at = now() - interval '2 seconds' WHERE id = $1`,
+      [active.id],
+    );
+
+    const paused = await store.pause({
+      organizationId,
+      caseId,
+      expectedVersion: active.version,
+      reason: "PROSPECT_REQUESTED",
+      correlationId: randomUUID(),
+    });
+    expect(paused.changed).toBe(true);
+    expect(paused.interview).toMatchObject({
+      pendingQuestion: "¿Qué resultado debería producir el proyecto?",
+      pauseReason: "PROSPECT_REQUESTED",
+      version: 3,
+    });
+    expect(paused.interview.activeSeconds).toBeGreaterThanOrEqual(8);
+    await expect(
+      store.pause({
+        organizationId,
+        caseId,
+        expectedVersion: active.version,
+        reason: "PROSPECT_REQUESTED",
+        correlationId: randomUUID(),
+      }),
+    ).resolves.toMatchObject({ changed: false });
+    const pausedUsage = await pool
+      .query<{ active_seconds: number }>(
+        `SELECT active_seconds FROM case_quota_usages WHERE case_id = $1`,
+        [caseId],
+      )
+      .then((result) => result.rows[0]?.active_seconds ?? 0);
+    await pool.query(`UPDATE interviews SET paused_at = now() - interval '1 hour' WHERE id = $1`, [
+      active.id,
+    ]);
+    await pool.query(
+      `UPDATE case_quota_usages SET last_accounted_at = now() - interval '1 hour'
+       WHERE case_id = $1`,
+      [caseId],
+    );
+
+    const resumed = await store.resume({
+      organizationId,
+      caseId,
+      expectedVersion: paused.interview.version,
+      correlationId: randomUUID(),
+    });
+    expect(resumed).toMatchObject({
+      changed: true,
+      interview: {
+        pendingQuestion: "¿Qué resultado debería producir el proyecto?",
+        pausedAt: null,
+        pauseReason: null,
+        activeSeconds: paused.interview.activeSeconds,
+        version: 4,
+      },
+    });
+    await expect(
+      store.resume({
+        organizationId,
+        caseId,
+        expectedVersion: paused.interview.version,
+        correlationId: randomUUID(),
+      }),
+    ).resolves.toMatchObject({ changed: false });
+    const state = await pool.query(
+      `SELECT pc.status, pc.next_action, q.active_seconds,
+              b.reserved_micros::integer, b.consumed_micros::integer,
+              b.uncertain_micros::integer
+       FROM prospect_cases pc
+       JOIN case_quota_usages q ON q.case_id = pc.id
+       JOIN budget_ledgers b ON b.case_id = pc.id
+       WHERE pc.id = $1`,
+      [caseId],
+    );
+    expect(state.rows[0]).toEqual({
+      status: "INTERVIEWING",
+      next_action: "ASK_QUESTION",
+      active_seconds: pausedUsage,
+      reserved_micros: 5,
+      consumed_micros: 23,
+      uncertain_micros: 7,
+    });
+  });
 });

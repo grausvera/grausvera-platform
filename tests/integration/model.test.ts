@@ -46,12 +46,12 @@ beforeAll(async () => {
     .query<{ id: string }>(
       `WITH inserted AS (
          INSERT INTO interview_policies (organization_id, version, topics)
-         VALUES ($1, 1, '[{"key":"PROJECT_INTENT","required":true}]')
+         VALUES ($1, 250, '[{"key":"PROJECT_INTENT","required":true}]')
          ON CONFLICT (organization_id, version) DO NOTHING RETURNING id
        )
        SELECT id FROM inserted
        UNION ALL
-       SELECT id FROM interview_policies WHERE organization_id = $1 AND version = 1
+       SELECT id FROM interview_policies WHERE organization_id = $1 AND version = 250
        LIMIT 1`,
       [organizationId],
     )
@@ -489,6 +489,9 @@ describe("reserved structured model extraction", () => {
       outbox: 1,
       outbound: 1,
     });
+    await pool.query(`UPDATE outbox_events SET status = 'CANCELLED' WHERE id = $1`, [
+      authorized.outboxEventId,
+    ]);
   });
 
   it("gives stop priority over a pending model question", async () => {

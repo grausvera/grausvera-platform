@@ -121,6 +121,30 @@ export class NextActionStore {
         );
       }
       if (["PAUSE", "ESCALATE", "READY"].includes(proposal.action)) {
+        if (proposal.action !== "READY") {
+          await client.query(
+            `UPDATE interviews SET
+               active_seconds = active_seconds + greatest(0, floor(extract(epoch FROM (now() - active_started_at))))::bigint,
+               active_started_at = NULL, paused_at = now(), pause_reason = $4,
+               resume_case_status = $5::case_status, resume_next_action = $6
+             WHERE organization_id = $1 AND case_id = $2 AND id = $3`,
+            [
+              input.organizationId,
+              proposal.case_id,
+              proposal.interview_id,
+              proposal.action,
+              proposal.case_status,
+              proposal.next_action,
+            ],
+          );
+          await client.query(
+            `UPDATE case_quota_usages SET
+               active_seconds = active_seconds + greatest(0, floor(extract(epoch FROM (now() - last_accounted_at))))::integer,
+               last_accounted_at = now(), updated_at = now()
+             WHERE organization_id = $1 AND case_id = $2 AND window_ends_at > now()`,
+            [input.organizationId, proposal.case_id],
+          );
+        }
         const state = proposal.action === "READY" ? "READY_FOR_SYNTHESIS" : "PAUSED";
         const nextAction =
           proposal.action === "READY"

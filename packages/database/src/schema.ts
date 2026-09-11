@@ -975,6 +975,12 @@ export const interviews = pgTable(
     policyId: uuid("policy_id").notNull(),
     status: interviewStatus("status").default("NOT_STARTED").notNull(),
     pendingQuestion: text("pending_question"),
+    activeSeconds: bigint("active_seconds", { mode: "number" }).default(0).notNull(),
+    activeStartedAt: timestamp("active_started_at", { withTimezone: true }).defaultNow(),
+    pausedAt: timestamp("paused_at", { withTimezone: true }),
+    pauseReason: text("pause_reason"),
+    resumeCaseStatus: caseStatus("resume_case_status"),
+    resumeNextAction: text("resume_next_action"),
     version,
     createdAt,
     updatedAt,
@@ -995,6 +1001,10 @@ export const interviews = pgTable(
     check(
       "interviews_values_check",
       sql`${t.version} > 0 and (${t.pendingQuestion} is null or length(${t.pendingQuestion}) > 0)`,
+    ),
+    check(
+      "interviews_pause_state_check",
+      sql`${t.activeSeconds} >= 0 and ((${t.pausedAt} is null and ${t.pauseReason} is null) or (${t.pausedAt} is not null and length(${t.pauseReason}) > 0))`,
     ),
   ],
 );
@@ -1357,28 +1367,38 @@ export const messageDeliveryAttempts = pgTable(
   (t) => [unique("message_delivery_attempts_number_unique").on(t.outboxEventId, t.attemptNumber)],
 );
 
-export const inboxEventItems = pgTable("inbox_event_items", {
-  id: uuid("id").defaultRandom().primaryKey(),
-  inboxEventId: uuid("inbox_event_id")
-    .notNull()
-    .references(() => inboxEvents.id),
-  organizationId: uuid("organization_id").notNull(),
-  providerConnectionId: uuid("provider_connection_id").notNull(),
-  itemKey: text("item_key").notNull(),
-  kind: inboxItemKind("kind").notNull(),
-  providerMessageId: text("provider_message_id"),
-  senderExternalId: text("sender_external_id"),
-  replyToProviderMessageId: text("reply_to_provider_message_id"),
-  messageType: text("message_type"),
-  textContent: text("text_content"),
-  providerOccurredAt: timestamp("provider_occurred_at", { withTimezone: true }).notNull(),
-  receivedOrdinal: integer("received_ordinal").notNull(),
-  status: inboxItemStatus("status").default("PENDING").notNull(),
-  caseId: uuid("case_id"),
-  conversationId: uuid("conversation_id"),
-  reasonCode: text("reason_code"),
-  createdAt,
-});
+export const inboxEventItems = pgTable(
+  "inbox_event_items",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    inboxEventId: uuid("inbox_event_id")
+      .notNull()
+      .references(() => inboxEvents.id),
+    organizationId: uuid("organization_id").notNull(),
+    providerConnectionId: uuid("provider_connection_id").notNull(),
+    itemKey: text("item_key").notNull(),
+    kind: inboxItemKind("kind").notNull(),
+    providerMessageId: text("provider_message_id"),
+    senderExternalId: text("sender_external_id"),
+    replyToProviderMessageId: text("reply_to_provider_message_id"),
+    messageType: text("message_type"),
+    textContent: text("text_content"),
+    providerOccurredAt: timestamp("provider_occurred_at", { withTimezone: true }).notNull(),
+    receivedOrdinal: integer("received_ordinal").notNull(),
+    status: inboxItemStatus("status").default("PENDING").notNull(),
+    caseId: uuid("case_id"),
+    conversationId: uuid("conversation_id"),
+    reasonCode: text("reason_code"),
+    clarificationPrompt: text("clarification_prompt"),
+    createdAt,
+  },
+  (t) => [
+    check(
+      "inbox_event_items_clarification_check",
+      sql`(${t.status} = 'AMBIGUOUS' and length(${t.clarificationPrompt}) > 0) or (${t.status} <> 'AMBIGUOUS' and ${t.clarificationPrompt} is null)`,
+    ),
+  ],
+);
 
 export const mediaReferences = pgTable("media_references", {
   id: uuid("id").defaultRandom().primaryKey(),

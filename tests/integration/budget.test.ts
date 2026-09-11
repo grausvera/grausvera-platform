@@ -21,7 +21,7 @@ beforeAll(async () => {
   await pool.query(
     `INSERT INTO budget_policies
       (organization_id, version, alert_micros, hard_limit_micros, effective_at)
-     VALUES ($1, 1, 50, 100, now() - interval '1 minute')`,
+     VALUES ($1, 1000, 50, 100, now() - interval '1 minute')`,
     [organizationId],
   );
 });
