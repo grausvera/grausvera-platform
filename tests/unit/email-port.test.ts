@@ -4,6 +4,7 @@ import {
   FakeEmailPort,
   ResendEmailPort,
   renderEmailVerification,
+  validateSendTransactionalEmailV1,
 } from "../../apps/worker/src/email";
 import { createLogger } from "../../packages/operations/src";
 
@@ -103,5 +104,25 @@ describe("transactional email ports", () => {
     expect(lines).toHaveLength(1);
     expect(lines[0]).not.toContain("token-canary");
     expect(lines[0]).not.toContain("prospect@example.invalid");
+  });
+
+  it("accepts the exact BRIEF_DELIVERY contract and rejects mixed purposes", () => {
+    const command = {
+      purpose: "BRIEF_DELIVERY",
+      organizationId: "organization",
+      caseId: "case",
+      contactPointId: "contact",
+      approvalId: "approval",
+      briefRevisionId: "revision",
+      representationReference: "object:representation",
+      representationHash: "a".repeat(64),
+      templateId: "brief-delivery",
+      templateVersion: 1,
+      idempotencyKey: "delivery:revision:contact",
+      deadlineAt: new Date(Date.now() + 60_000).toISOString(),
+    };
+    expect(validateSendTransactionalEmailV1(command)).toBe(true);
+    expect(validateSendTransactionalEmailV1({ ...command, challengeId: "mixed" })).toBe(false);
+    expect(validateSendTransactionalEmailV1({ ...command, purpose: "UNKNOWN" })).toBe(false);
   });
 });

@@ -23,6 +23,7 @@ const configSchema = z.object({
   RESEND_API_KEY: z.string().min(1).optional(),
   RESEND_BASE_URL: z.url().default("https://api.resend.com"),
   RESEND_FROM: z.string().min(1).optional(),
+  RESEND_WEBHOOK_SECRET: z.string().min(1).optional(),
   NODE_ENV: environmentSchema.default("development"),
   PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
 });

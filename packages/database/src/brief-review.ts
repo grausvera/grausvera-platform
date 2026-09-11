@@ -135,6 +135,18 @@ export class BriefReviewStore {
         [principal.organizationId, base.id],
       );
       await client.query(
+        `UPDATE confirmation_requests SET status='REVOKED',revoked_at=now(),updated_at=now()
+         WHERE organization_id=$1 AND revision_id=$2 AND status='PENDING'`,
+        [principal.organizationId, base.id],
+      );
+      await client.query(
+        `UPDATE outbox_events SET status='CANCELLED',last_error_code='revision_superseded',updated_at=now()
+         WHERE id IN (SELECT outbox_event_id FROM confirmation_requests
+           WHERE organization_id=$1 AND revision_id=$2 AND status='REVOKED')
+           AND status IN ('PENDING','DISPATCHING')`,
+        [principal.organizationId, base.id],
+      );
+      await client.query(
         `UPDATE brief_reviews SET status='REJECTED',comments='Superseded by a new revision',
          decided_at=now(),updated_at=now()
          WHERE organization_id=$1 AND revision_id=$2 AND status='PENDING'`,
