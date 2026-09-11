@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { OperatorConsoleStore, type OperatorPrincipal } from "../../packages/database/src";
+import {
+  KnowledgeStore,
+  OperatorConsoleStore,
+  type OperatorPrincipal,
+} from "../../packages/database/src";
 import { getAuth } from "../../apps/web/lib/auth";
 
 const connectionString = process.env.DATABASE_URL;
@@ -9,12 +13,15 @@ if (!connectionString) throw new Error("DATABASE_URL is required for security te
 
 const pool = new Pool({ connectionString });
 const store = new OperatorConsoleStore(connectionString);
+const knowledge = new KnowledgeStore(connectionString);
 const userId = `operator-${randomUUID()}`;
 const caseId = randomUUID();
 const personId = randomUUID();
 const contactPointId = randomUUID();
 const connectionId = randomUUID();
 const conversationId = randomUUID();
+const claimId = randomUUID();
+const externalSourceId = randomUUID();
 let organizationId: string;
 let principal: OperatorPrincipal;
 
@@ -86,6 +93,29 @@ beforeAll(async () => {
       contactPointId,
     ],
   );
+  await pool.query(
+    `INSERT INTO claims
+      (id, organization_id, case_id, kind, category, content, confidence_basis_points,
+       sensitivity, audience, creator)
+     VALUES ($1, $2, $3, 'FACT', 'PROJECT_INTENT', 'synthetic console claim', 8000,
+       'CONFIDENTIAL', 'INTERNAL', 'HUMAN')`,
+    [claimId, organizationId, caseId],
+  );
+  await pool.query(
+    `INSERT INTO external_sources
+      (id, organization_id, case_id, canonical_url, title, publisher, accessed_at,
+       excerpt, content_hash, purpose, confidence_basis_points)
+     VALUES ($1, $2, $3, 'https://example.invalid/console-source', 'Console source',
+       'Example', now(), 'Synthetic console evidence', repeat('e', 64),
+       'PROJECT_DISCOVERY', 8000)`,
+    [externalSourceId, organizationId, caseId],
+  );
+  await pool.query(
+    `INSERT INTO claim_sources
+      (organization_id, case_id, claim_id, external_source_id, relation)
+     VALUES ($1, $2, $3, $4, 'SUPPORTS')`,
+    [organizationId, caseId, claimId, externalSourceId],
+  );
   principal = { userId, organizationId, twoFactorVerified: true };
 });
 
@@ -96,6 +126,7 @@ afterAll(async () => {
     [userId],
   );
   await store.close();
+  await knowledge.close();
   await pool.end();
 });
 
@@ -120,6 +151,27 @@ describe("operator console authorization", () => {
     await expect(
       store.getCase({ ...principal, userId: `foreign-${randomUUID()}` }, caseId),
     ).rejects.toThrow("operator_forbidden");
+    await expect(
+      knowledge.listCaseClaims({ ...principal, twoFactorVerified: false }, caseId),
+    ).rejects.toThrow("operator_two_factor_required");
+    await expect(
+      knowledge.listCaseClaims({ ...principal, userId: `foreign-${randomUUID()}` }, caseId),
+    ).rejects.toThrow("knowledge_case_not_authorized");
+  });
+
+  it("navigates an authorized claim to its external provenance", async () => {
+    await expect(knowledge.listCaseClaims(principal, caseId)).resolves.toEqual([
+      expect.objectContaining({
+        claim: expect.objectContaining({ id: claimId, content: "synthetic console claim" }),
+        sources: [
+          expect.objectContaining({
+            kind: "EXTERNAL",
+            referenceId: externalSourceId,
+            href: "https://example.invalid/console-source",
+          }),
+        ],
+      }),
+    ]);
   });
 
   it("does not allow a response before the operator takes the case", async () => {

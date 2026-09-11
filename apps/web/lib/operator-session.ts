@@ -1,4 +1,4 @@
-import { OperatorConsoleStore, type OperatorPrincipal } from "@grausvera/database";
+import { KnowledgeStore, OperatorConsoleStore, type OperatorPrincipal } from "@grausvera/database";
 import { headers } from "next/headers";
 import { redirect } from "next/navigation";
 import { Pool } from "pg";
@@ -34,4 +34,10 @@ export function getOperatorStore(): OperatorConsoleStore {
   const connectionString = process.env.DATABASE_URL;
   if (!connectionString) throw new Error("DATABASE_URL is required for the operator console");
   return new OperatorConsoleStore(connectionString);
+}
+
+export function getKnowledgeStore(): KnowledgeStore {
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) throw new Error("DATABASE_URL is required for the operator console");
+  return new KnowledgeStore(connectionString);
 }

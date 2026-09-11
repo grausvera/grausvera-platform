@@ -4,6 +4,7 @@ import { Pool } from "pg";
 import {
   AttachmentService,
   AttachmentStore,
+  KnowledgeStore,
   type MediaDownloadPort,
   type ObjectPort,
 } from "../../packages/database/src";
@@ -13,6 +14,7 @@ if (!connectionString) throw new Error("DATABASE_URL is required for integration
 
 const pool = new Pool({ connectionString });
 const store = new AttachmentStore(connectionString);
+const knowledge = new KnowledgeStore(connectionString);
 const objects = new Map<string, Uint8Array>();
 const objectPort: ObjectPort = {
   async put(key, bytes) {
@@ -105,6 +107,7 @@ beforeAll(async () => {
 });
 
 afterAll(async () => {
+  await knowledge.close();
   await store.close();
   await pool.end();
 });
@@ -150,6 +153,24 @@ describe("durable safe attachments", () => {
       id: created.id,
     });
     expect(objects.size).toBe(1);
+    const claimId = randomUUID();
+    await pool.query(
+      `INSERT INTO claims
+        (id, organization_id, case_id, kind, category, content,
+         confidence_basis_points, sensitivity, audience, creator)
+       VALUES ($1, $2, $3, 'FACT', 'ATTACHMENT', 'synthetic attachment fact',
+         10000, 'CONFIDENTIAL', 'INTERNAL', 'HUMAN')`,
+      [claimId, organizationId, caseId],
+    );
+    await expect(
+      knowledge.linkReviewedAttachment({
+        organizationId,
+        caseId,
+        claimId,
+        attachmentId: created.id,
+        relation: "SUPPORTS",
+      }),
+    ).rejects.toThrow("claim_attachment_source_not_allowed");
     await expect(
       store.review({
         organizationId,
@@ -165,6 +186,16 @@ describe("durable safe attachments", () => {
       operatorUserId,
       decision: "REVIEWED",
       correlationId: randomUUID(),
+    });
+    await knowledge.linkReviewedAttachment({
+      organizationId,
+      caseId,
+      claimId,
+      attachmentId: created.id,
+      relation: "SUPPORTS",
+    });
+    await expect(knowledge.getClaimTrace(organizationId, caseId, claimId)).resolves.toMatchObject({
+      sources: [{ kind: "ATTACHMENT", referenceId: created.id, relation: "SUPPORTS" }],
     });
     const state = await pool.query(
       `SELECT status, reviewed_by_user_id,

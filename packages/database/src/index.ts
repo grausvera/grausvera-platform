@@ -11,4 +11,5 @@ export * from "./next-action.js";
 export * from "./object-storage.js";
 export * from "./operator-console.js";
 export * from "./quota.js";
+export * from "./research.js";
 export * from "./schema.js";

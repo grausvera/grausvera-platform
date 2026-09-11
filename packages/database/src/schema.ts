@@ -170,6 +170,15 @@ export const candidateBatchStatus = pgEnum("candidate_batch_status", [
   "APPLIED",
   "REJECTED",
 ]);
+export const researchRequestStatus = pgEnum("research_request_status", [
+  "AUTHORIZED",
+  "BUDGET_REJECTED",
+  "RUNNING",
+  "SUCCEEDED",
+  "INVALID",
+  "FAILED",
+  "UNCERTAIN",
+]);
 export const nextActionKind = pgEnum("next_action_kind", [
   "ASK",
   "SUMMARIZE",
@@ -294,6 +303,7 @@ export const prospectCases = pgTable(
     origin: text("origin"),
     campaign: text("campaign"),
     nextAction: text("next_action"),
+    knowledgeVersion: integer("knowledge_version").default(1).notNull(),
     version,
     createdAt,
     updatedAt,
@@ -302,6 +312,7 @@ export const prospectCases = pgTable(
     unique("prospect_cases_membership_unique").on(t.organizationId, t.id),
     index("prospect_cases_status_idx").on(t.organizationId, t.status),
     check("prospect_cases_version_positive", sql`${t.version} > 0`),
+    check("prospect_cases_knowledge_version_positive", sql`${t.knowledgeVersion} > 0`),
   ],
 );
 
@@ -925,6 +936,7 @@ export const attachments = pgTable(
       name: "attachments_reviewer_fk",
     }).onDelete("restrict"),
     unique("attachments_media_unique").on(t.organizationId, t.mediaReferenceId),
+    unique("attachments_membership_unique").on(t.organizationId, t.caseId, t.id),
     unique("attachments_object_key_unique").on(t.objectKey),
     index("attachments_review_queue_idx").on(t.organizationId, t.status, t.createdAt),
     check(
@@ -938,6 +950,46 @@ export const attachments = pgTable(
     check(
       "attachments_rejection_check",
       sql`(${t.status} = 'REJECTED' and ${t.rejectionReason} is not null) or (${t.status} <> 'REJECTED' and ${t.rejectionReason} is null)`,
+    ),
+  ],
+);
+
+export const externalSources = pgTable(
+  "external_sources",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id").notNull(),
+    caseId: uuid("case_id").notNull(),
+    canonicalUrl: text("canonical_url").notNull(),
+    title: text("title").notNull(),
+    publisher: text("publisher").notNull(),
+    accessedAt: timestamp("accessed_at", { withTimezone: true }).notNull(),
+    excerpt: text("excerpt").notNull(),
+    contentHash: text("content_hash"),
+    sourceVersion: text("source_version"),
+    purpose: text("purpose").notNull(),
+    confidenceBasisPoints: integer("confidence_basis_points").notNull(),
+    researchRequestId: uuid("research_request_id"),
+    createdAt,
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.organizationId, t.caseId],
+      foreignColumns: [prospectCases.organizationId, prospectCases.id],
+      name: "external_sources_case_fk",
+    }).onDelete("restrict"),
+    unique("external_sources_membership_unique").on(t.organizationId, t.caseId, t.id),
+    unique("external_sources_url_unique").on(
+      t.organizationId,
+      t.caseId,
+      t.canonicalUrl,
+      t.contentHash,
+      t.sourceVersion,
+    ),
+    index("external_sources_case_idx").on(t.organizationId, t.caseId, t.accessedAt),
+    check(
+      "external_sources_values_check",
+      sql`length(${t.canonicalUrl}) > 0 and length(${t.title}) > 0 and length(${t.publisher}) > 0 and length(${t.excerpt}) > 0 and length(${t.purpose}) > 0 and ${t.confidenceBasisPoints} between 0 and 10000 and ((${t.contentHash} is not null and length(${t.contentHash}) = 64) or ${t.sourceVersion} is not null)`,
     ),
   ],
 );
@@ -1089,7 +1141,9 @@ export const claimSources = pgTable(
     organizationId: uuid("organization_id").notNull(),
     caseId: uuid("case_id").notNull(),
     claimId: uuid("claim_id").notNull(),
-    messageId: uuid("message_id").notNull(),
+    messageId: uuid("message_id"),
+    attachmentId: uuid("attachment_id"),
+    externalSourceId: uuid("external_source_id"),
     relation: claimSourceRelation("relation").notNull(),
     createdAt,
   },
@@ -1104,7 +1158,29 @@ export const claimSources = pgTable(
       foreignColumns: [messages.organizationId, messages.caseId, messages.id],
       name: "claim_sources_message_fk",
     }).onDelete("restrict"),
-    unique("claim_sources_unique").on(t.organizationId, t.claimId, t.messageId, t.relation),
+    foreignKey({
+      columns: [t.organizationId, t.caseId, t.attachmentId],
+      foreignColumns: [attachments.organizationId, attachments.caseId, attachments.id],
+      name: "claim_sources_attachment_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.organizationId, t.caseId, t.externalSourceId],
+      foreignColumns: [externalSources.organizationId, externalSources.caseId, externalSources.id],
+      name: "claim_sources_external_fk",
+    }).onDelete("restrict"),
+    uniqueIndex("claim_sources_message_unique")
+      .on(t.organizationId, t.claimId, t.messageId, t.relation)
+      .where(sql`${t.messageId} is not null`),
+    uniqueIndex("claim_sources_attachment_unique")
+      .on(t.organizationId, t.claimId, t.attachmentId, t.relation)
+      .where(sql`${t.attachmentId} is not null`),
+    uniqueIndex("claim_sources_external_unique")
+      .on(t.organizationId, t.claimId, t.externalSourceId, t.relation)
+      .where(sql`${t.externalSourceId} is not null`),
+    check(
+      "claim_sources_exactly_one_check",
+      sql`num_nonnulls(${t.messageId}, ${t.attachmentId}, ${t.externalSourceId}) = 1`,
+    ),
   ],
 );
 
@@ -1146,7 +1222,7 @@ export const modelInvocations = pgTable(
     id: uuid("id").defaultRandom().primaryKey(),
     organizationId: uuid("organization_id").notNull(),
     caseId: uuid("case_id").notNull(),
-    interviewId: uuid("interview_id").notNull(),
+    interviewId: uuid("interview_id"),
     reservationId: uuid("reservation_id").notNull(),
     purpose: text("purpose").notNull(),
     provider: text("provider").notNull(),
@@ -1192,7 +1268,64 @@ export const modelInvocations = pgTable(
     index("model_invocations_case_idx").on(t.organizationId, t.caseId, t.createdAt),
     check(
       "model_invocations_values_check",
-      sql`${t.purpose} in ('INTERVIEW_EXTRACT', 'NEXT_QUESTION') and length(${t.provider}) > 0 and length(${t.model}) > 0 and ${t.promptVersion} > 0 and ${t.schemaVersion} > 0 and ${t.expectedInterviewVersion} > 0 and length(${t.promptHash}) = 64 and length(${t.schemaHash}) = 64 and length(${t.contextHash}) = 64 and (${t.inputTokens} is null or ${t.inputTokens} >= 0) and (${t.outputTokens} is null or ${t.outputTokens} >= 0) and (${t.costMicros} is null or ${t.costMicros} >= 0) and (${t.latencyMs} is null or ${t.latencyMs} >= 0)`,
+      sql`${t.purpose} in ('INTERVIEW_EXTRACT', 'NEXT_QUESTION', 'BOUNDED_RESEARCH') and length(${t.provider}) > 0 and length(${t.model}) > 0 and ${t.promptVersion} > 0 and ${t.schemaVersion} > 0 and ${t.expectedInterviewVersion} > 0 and length(${t.promptHash}) = 64 and length(${t.schemaHash}) = 64 and length(${t.contextHash}) = 64 and (${t.inputTokens} is null or ${t.inputTokens} >= 0) and (${t.outputTokens} is null or ${t.outputTokens} >= 0) and (${t.costMicros} is null or ${t.costMicros} >= 0) and (${t.latencyMs} is null or ${t.latencyMs} >= 0) and ((${t.purpose} = 'BOUNDED_RESEARCH' and ${t.interviewId} is null) or (${t.purpose} <> 'BOUNDED_RESEARCH' and ${t.interviewId} is not null))`,
+    ),
+  ],
+);
+
+export const researchRequests = pgTable(
+  "research_requests",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id").notNull(),
+    caseId: uuid("case_id").notNull(),
+    question: text("question").notNull(),
+    authorizedByUserId: text("authorized_by_user_id").notNull(),
+    knowledgeVersion: integer("knowledge_version").notNull(),
+    maxQueries: integer("max_queries").default(2).notNull(),
+    maxReads: integer("max_reads").default(5).notNull(),
+    maxDurationSeconds: integer("max_duration_seconds").default(120).notNull(),
+    status: researchRequestStatus("status").default("AUTHORIZED").notNull(),
+    reservationId: uuid("reservation_id"),
+    modelInvocationId: uuid("model_invocation_id"),
+    createdAt,
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    updatedAt,
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.organizationId, t.caseId],
+      foreignColumns: [prospectCases.organizationId, prospectCases.id],
+      name: "research_requests_case_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.organizationId, t.authorizedByUserId],
+      foreignColumns: [operatorMemberships.organizationId, operatorMemberships.userId],
+      name: "research_requests_operator_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.organizationId, t.caseId, t.reservationId],
+      foreignColumns: [
+        budgetReservations.organizationId,
+        budgetReservations.caseId,
+        budgetReservations.id,
+      ],
+      name: "research_requests_reservation_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.organizationId, t.caseId, t.modelInvocationId],
+      foreignColumns: [
+        modelInvocations.organizationId,
+        modelInvocations.caseId,
+        modelInvocations.id,
+      ],
+      name: "research_requests_invocation_fk",
+    }).onDelete("restrict"),
+    unique("research_requests_membership_unique").on(t.organizationId, t.caseId, t.id),
+    index("research_requests_case_idx").on(t.organizationId, t.caseId, t.createdAt),
+    check(
+      "research_requests_values_check",
+      sql`length(${t.question}) > 0 and ${t.knowledgeVersion} > 0 and ${t.maxQueries} between 1 and 2 and ${t.maxReads} between 1 and 5 and ${t.maxDurationSeconds} between 1 and 120`,
     ),
   ],
 );

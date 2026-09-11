@@ -378,6 +378,51 @@ describe("reserved structured model extraction", () => {
       contradictions: 1,
       contradiction_audience: "INTERNAL",
     });
+    const externalSourceId = await knowledge.recordExternalSource({
+      organizationId,
+      caseId: current.caseId,
+      claimId: revision.claimIds[0],
+      canonicalUrl: "https://example.invalid/synthetic-source",
+      title: "Synthetic public source",
+      publisher: "Example",
+      accessedAt: new Date("2026-09-10T00:00:00Z"),
+      excerpt: "A minimal synthetic excerpt supporting the corrected scope.",
+      contentHash: "b".repeat(64),
+      purpose: "PROJECT_DISCOVERY",
+      confidenceBasisPoints: 8000,
+      relation: "SUPPORTS",
+    });
+    const trace = await knowledge.getClaimTrace(
+      organizationId,
+      current.caseId,
+      revision.claimIds[0],
+    );
+    expect(trace.sources).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "MESSAGE",
+          referenceId: current.messageId,
+        }),
+        expect.objectContaining({
+          kind: "EXTERNAL",
+          referenceId: externalSourceId,
+          label: "Synthetic public source",
+        }),
+      ]),
+    );
+    expect(trace.relations).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ relation: "REPLACES", claimId: applied.claimIds[0] }),
+      ]),
+    );
+    await expect(knowledge.listContradictions(organizationId, current.caseId)).resolves.toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          contradictionClaimId: revision.claimIds[1],
+          targetClaimId: applied.claimIds[0],
+        }),
+      ]),
+    );
   });
 
   it("rejects a stale batch atomically", async () => {

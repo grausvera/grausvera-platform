@@ -120,6 +120,20 @@
       "when": 1790304000000,
       "tag": "0016_case_association_clarification",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1790390400000,
+      "tag": "0017_extended_claim_sources",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1790476800000,
+      "tag": "0018_bounded_research",
+      "breakpoints": true
     }
   ]
 }

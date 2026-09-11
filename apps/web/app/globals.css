@@ -288,6 +288,7 @@ h1 {
 }
 
 .console-form input,
+.console-form select,
 .console-form textarea {
   background: white;
   border: 1px solid var(--color-line);
@@ -309,7 +310,8 @@ h1 {
 }
 
 .console-case-list,
-.console-messages {
+.console-messages,
+.console-claims {
   display: grid;
   gap: var(--space-4);
   list-style: none;
@@ -318,6 +320,7 @@ h1 {
 
 .console-case-list li,
 .console-messages li,
+.console-claims > li,
 .console-secret {
   border: 1px solid var(--color-line);
   border-radius: var(--radius-small);
@@ -335,6 +338,20 @@ h1 {
 .console-messages li[data-direction="OUTBOUND"] {
   background: var(--color-sage);
   margin-left: var(--space-8);
+}
+
+.console-knowledge {
+  margin-top: var(--space-8);
+}
+
+.console-claims h3 {
+  font-size: 1rem;
+  margin-bottom: var(--space-2);
+}
+
+.console-correction-form {
+  border-top: 1px solid var(--color-line);
+  padding-top: var(--space-4);
 }
 
 .site-footer {

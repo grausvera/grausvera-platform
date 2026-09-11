@@ -10,7 +10,7 @@ export interface ModelRequest {
   model: string;
   reasoningEffort: "none" | "low" | "medium";
   instructions: string;
-  context: ContextPackageV1;
+  context: ContextPackageV1 | (Record<string, unknown> & { purpose: string });
   schema: object;
   maxOutputTokens: number;
 }

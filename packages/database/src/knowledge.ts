@@ -25,6 +25,37 @@ type CandidateOutput = {
   candidateTopics: string[];
 };
 
+export type ClaimSourceRelation = "SUPPORTS" | "CONTRADICTS" | "CONTEXT";
+
+export type KnowledgeOperatorPrincipal = {
+  userId: string;
+  organizationId: string;
+  twoFactorVerified: boolean;
+};
+
+export type ExistingClaimSource =
+  | { kind: "MESSAGE"; id: string; relation: ClaimSourceRelation }
+  | { kind: "ATTACHMENT"; id: string; relation: ClaimSourceRelation }
+  | { kind: "EXTERNAL"; id: string; relation: ClaimSourceRelation };
+
+export type ClaimTrace = {
+  claim: { id: string; kind: string; content: string; validity: string };
+  sources: Array<{
+    id: string;
+    kind: "MESSAGE" | "ATTACHMENT" | "EXTERNAL";
+    referenceId: string;
+    relation: ClaimSourceRelation;
+    label: string | null;
+    href: string | null;
+  }>;
+  relations: Array<{
+    direction: "OUTGOING" | "INCOMING";
+    relation: string;
+    claimId: string;
+    content: string;
+  }>;
+};
+
 export class KnowledgeStore {
   readonly #pool: Pool;
 
@@ -34,6 +65,321 @@ export class KnowledgeStore {
 
   close(): Promise<void> {
     return this.#pool.end();
+  }
+
+  async recordExternalSource(input: {
+    organizationId: string;
+    caseId: string;
+    claimId: string;
+    canonicalUrl: string;
+    title: string;
+    publisher: string;
+    accessedAt: Date;
+    excerpt: string;
+    contentHash?: string;
+    sourceVersion?: string;
+    purpose: string;
+    confidenceBasisPoints: number;
+    relation: ClaimSourceRelation;
+  }): Promise<string> {
+    const id = randomUUID();
+    const client = await this.#pool.connect();
+    try {
+      await client.query("BEGIN");
+      const inserted = await client.query(
+        `INSERT INTO external_sources
+          (id, organization_id, case_id, canonical_url, title, publisher, accessed_at,
+           excerpt, content_hash, source_version, purpose, confidence_basis_points)
+         SELECT $4, c.organization_id, c.case_id, $5, $6, $7, $8, $9, $10, $11, $12, $13
+         FROM claims c
+         WHERE c.organization_id = $1 AND c.case_id = $2 AND c.id = $3`,
+        [
+          input.organizationId,
+          input.caseId,
+          input.claimId,
+          id,
+          input.canonicalUrl.trim(),
+          input.title.trim(),
+          input.publisher.trim(),
+          input.accessedAt,
+          input.excerpt.trim(),
+          input.contentHash,
+          input.sourceVersion?.trim(),
+          input.purpose.trim(),
+          input.confidenceBasisPoints,
+        ],
+      );
+      if ((inserted.rowCount ?? 0) !== 1) throw new Error("claim_source_not_authorized");
+      await client.query(
+        `INSERT INTO claim_sources
+          (organization_id, case_id, claim_id, external_source_id, relation)
+         VALUES ($1, $2, $3, $4, $5::claim_source_relation)`,
+        [input.organizationId, input.caseId, input.claimId, id, input.relation],
+      );
+      await client.query("COMMIT");
+      return id;
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async linkReviewedAttachment(input: {
+    organizationId: string;
+    caseId: string;
+    claimId: string;
+    attachmentId: string;
+    relation: ClaimSourceRelation;
+  }): Promise<void> {
+    const result = await this.#pool.query(
+      `INSERT INTO claim_sources
+        (organization_id, case_id, claim_id, attachment_id, relation)
+       SELECT c.organization_id, c.case_id, c.id, a.id, $5::claim_source_relation
+       FROM claims c JOIN attachments a
+         ON a.organization_id = c.organization_id AND a.case_id = c.case_id
+       WHERE c.organization_id = $1 AND c.case_id = $2 AND c.id = $3
+         AND a.id = $4 AND a.status = 'REVIEWED'
+       ON CONFLICT DO NOTHING`,
+      [input.organizationId, input.caseId, input.claimId, input.attachmentId, input.relation],
+    );
+    if ((result.rowCount ?? 0) === 0) {
+      const existing = await this.#pool.query(
+        `SELECT 1 FROM claim_sources WHERE organization_id = $1 AND case_id = $2
+           AND claim_id = $3 AND attachment_id = $4 AND relation = $5::claim_source_relation`,
+        [input.organizationId, input.caseId, input.claimId, input.attachmentId, input.relation],
+      );
+      if ((existing.rowCount ?? 0) === 0) throw new Error("claim_attachment_source_not_allowed");
+    }
+  }
+
+  async correctClaim(
+    principal: KnowledgeOperatorPrincipal,
+    input: {
+      caseId: string;
+      targetClaimId: string;
+      replacement: string;
+      confidenceBasisPoints: number;
+      source: ExistingClaimSource;
+      correlationId: string;
+    },
+  ): Promise<{ claimId: string }> {
+    const replacement = input.replacement.trim();
+    if (
+      !replacement ||
+      !Number.isInteger(input.confidenceBasisPoints) ||
+      input.confidenceBasisPoints < 0 ||
+      input.confidenceBasisPoints > 10_000
+    )
+      throw new Error("claim_correction_invalid");
+    if (!principal.twoFactorVerified) throw new Error("operator_two_factor_required");
+    const client = await this.#pool.connect();
+    try {
+      await client.query("BEGIN");
+      const target = await client
+        .query<{
+          kind: string;
+          category: string;
+          sensitivity: string;
+          audience: string;
+        }>(
+          `SELECT c.kind, c.category, c.sensitivity, c.audience
+           FROM claims c
+           JOIN operator_memberships m ON m.organization_id = c.organization_id
+             AND m.user_id = $4 AND m.role = 'ENGINEER' AND m.active
+           JOIN operator_case_assignments a ON a.organization_id = c.organization_id
+             AND a.case_id = c.case_id AND a.user_id = m.user_id AND a.active
+           WHERE c.organization_id = $1 AND c.case_id = $2 AND c.id = $3
+             AND c.validity = 'CURRENT'
+           FOR UPDATE OF c`,
+          [principal.organizationId, input.caseId, input.targetClaimId, principal.userId],
+        )
+        .then((result) => result.rows[0]);
+      if (!target) throw new Error("claim_correction_not_authorized");
+
+      await this.#assertExistingSource(client, {
+        organizationId: principal.organizationId,
+        caseId: input.caseId,
+        source: input.source,
+      });
+      const claimId = randomUUID();
+      await client.query(
+        `INSERT INTO claims
+          (id, organization_id, case_id, kind, category, content,
+           confidence_basis_points, confirmed, sensitivity, audience, creator)
+         VALUES ($1, $2, $3, $4::claim_kind, $5, $6, $7, true,
+           $8::claim_sensitivity, $9::claim_audience, 'HUMAN')`,
+        [
+          claimId,
+          principal.organizationId,
+          input.caseId,
+          target.kind,
+          target.category,
+          replacement,
+          input.confidenceBasisPoints,
+          target.sensitivity,
+          target.audience,
+        ],
+      );
+      const sourceColumn = {
+        MESSAGE: "message_id",
+        ATTACHMENT: "attachment_id",
+        EXTERNAL: "external_source_id",
+      }[input.source.kind];
+      await client.query(
+        `INSERT INTO claim_sources
+          (organization_id, case_id, claim_id, ${sourceColumn}, relation)
+         VALUES ($1, $2, $3, $4, $5::claim_source_relation)`,
+        [principal.organizationId, input.caseId, claimId, input.source.id, input.source.relation],
+      );
+      await client.query(
+        `UPDATE claims SET validity = 'REPLACED', updated_at = now()
+         WHERE organization_id = $1 AND case_id = $2 AND id = $3`,
+        [principal.organizationId, input.caseId, input.targetClaimId],
+      );
+      await this.#insertRelation(
+        client,
+        principal.organizationId,
+        input.caseId,
+        claimId,
+        input.targetClaimId,
+        "REPLACES",
+      );
+      await client.query(
+        `UPDATE prospect_cases SET knowledge_version = knowledge_version + 1, updated_at = now()
+         WHERE organization_id = $1 AND id = $2`,
+        [principal.organizationId, input.caseId],
+      );
+      await client.query(
+        `INSERT INTO audit_events
+          (organization_id, case_id, actor, action, resource_type, resource_id,
+           result, correlation_id, origin, metadata)
+         VALUES ($1, $2, $3, 'claim.corrected', 'claim', $4, 'SUCCEEDED', $5,
+           'knowledge-store', $6::jsonb)`,
+        [
+          principal.organizationId,
+          input.caseId,
+          `operator:${principal.userId}`,
+          claimId,
+          input.correlationId,
+          JSON.stringify({
+            targetClaimId: input.targetClaimId,
+            sourceKind: input.source.kind,
+            sourceId: input.source.id,
+          }),
+        ],
+      );
+      await client.query("COMMIT");
+      return { claimId };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
+  async getClaimTrace(
+    organizationId: string,
+    caseId: string,
+    claimId: string,
+  ): Promise<ClaimTrace> {
+    const claim = await this.#pool
+      .query<{ id: string; kind: string; content: string; validity: string }>(
+        `SELECT id, kind, content, validity FROM claims
+         WHERE organization_id = $1 AND case_id = $2 AND id = $3`,
+        [organizationId, caseId, claimId],
+      )
+      .then((result) => result.rows[0]);
+    if (!claim) throw new Error("claim_not_found");
+    const sources = await this.#pool.query<ClaimTrace["sources"][number]>(
+      `SELECT cs.id, CASE
+           WHEN cs.message_id IS NOT NULL THEN 'MESSAGE'
+           WHEN cs.attachment_id IS NOT NULL THEN 'ATTACHMENT'
+           ELSE 'EXTERNAL'
+         END AS kind,
+         COALESCE(cs.message_id, cs.attachment_id, cs.external_source_id)::text AS "referenceId",
+         cs.relation,
+         CASE WHEN cs.attachment_id IS NOT NULL THEN a.object_key
+              WHEN cs.external_source_id IS NOT NULL THEN e.title
+              WHEN cs.message_id IS NOT NULL THEN 'Message' END AS label,
+         CASE WHEN cs.message_id IS NOT NULL THEN '#message-' || cs.message_id::text
+              WHEN cs.external_source_id IS NOT NULL THEN e.canonical_url END AS href
+       FROM claim_sources cs
+       LEFT JOIN attachments a ON a.organization_id = cs.organization_id
+         AND a.case_id = cs.case_id AND a.id = cs.attachment_id
+       LEFT JOIN external_sources e ON e.organization_id = cs.organization_id
+         AND e.case_id = cs.case_id AND e.id = cs.external_source_id
+       WHERE cs.organization_id = $1 AND cs.case_id = $2 AND cs.claim_id = $3
+       ORDER BY cs.created_at, cs.id`,
+      [organizationId, caseId, claimId],
+    );
+    const relations = await this.#pool.query<ClaimTrace["relations"][number]>(
+      `SELECT 'OUTGOING' AS direction, r.relation, target.id AS "claimId",
+              target.content
+       FROM claim_relations r JOIN claims target
+         ON target.organization_id = r.organization_id AND target.case_id = r.case_id
+           AND target.id = r.target_claim_id
+       WHERE r.organization_id = $1 AND r.case_id = $2 AND r.source_claim_id = $3
+       UNION ALL
+       SELECT 'INCOMING' AS direction, r.relation, source.id AS "claimId",
+              source.content
+       FROM claim_relations r JOIN claims source
+         ON source.organization_id = r.organization_id AND source.case_id = r.case_id
+           AND source.id = r.source_claim_id
+       WHERE r.organization_id = $1 AND r.case_id = $2 AND r.target_claim_id = $3
+       ORDER BY direction, "claimId"`,
+      [organizationId, caseId, claimId],
+    );
+    return { claim, sources: sources.rows, relations: relations.rows };
+  }
+
+  async listCaseClaims(
+    principal: KnowledgeOperatorPrincipal,
+    caseId: string,
+  ): Promise<ClaimTrace[]> {
+    if (!principal.twoFactorVerified) throw new Error("operator_two_factor_required");
+    const authorized = await this.#pool.query(
+      `SELECT 1 FROM prospect_cases c JOIN operator_memberships m
+         ON m.organization_id = c.organization_id AND m.user_id = $3
+           AND m.role = 'ENGINEER' AND m.active
+       WHERE c.organization_id = $1 AND c.id = $2`,
+      [principal.organizationId, caseId, principal.userId],
+    );
+    if ((authorized.rowCount ?? 0) !== 1) throw new Error("knowledge_case_not_authorized");
+    const claimIds = await this.#pool
+      .query<{ id: string }>(
+        `SELECT id FROM claims WHERE organization_id = $1 AND case_id = $2
+         ORDER BY created_at, id`,
+        [principal.organizationId, caseId],
+      )
+      .then((result) => result.rows.map((row) => row.id));
+    return Promise.all(
+      claimIds.map((claimId) => this.getClaimTrace(principal.organizationId, caseId, claimId)),
+    );
+  }
+
+  async listContradictions(organizationId: string, caseId: string) {
+    return this.#pool
+      .query<{
+        contradictionClaimId: string;
+        contradiction: string;
+        targetClaimId: string;
+        target: string;
+      }>(
+        `SELECT source.id AS "contradictionClaimId", source.content AS contradiction,
+                target.id AS "targetClaimId", target.content AS target
+         FROM claim_relations r
+         JOIN claims source ON source.organization_id = r.organization_id
+           AND source.case_id = r.case_id AND source.id = r.source_claim_id
+         JOIN claims target ON target.organization_id = r.organization_id
+           AND target.case_id = r.case_id AND target.id = r.target_claim_id
+         WHERE r.organization_id = $1 AND r.case_id = $2 AND r.relation = 'CONTRADICTS'
+         ORDER BY r.created_at, r.id`,
+        [organizationId, caseId],
+      )
+      .then((result) => result.rows);
   }
 
   async applyCandidateBatch(input: {
@@ -262,6 +608,12 @@ export class KnowledgeStore {
           [input.organizationId, batch.interview_id, output.candidateTopics],
         );
       }
+      if (claimIds.length > 0)
+        await client.query(
+          `UPDATE prospect_cases SET knowledge_version = knowledge_version + 1, updated_at = now()
+           WHERE organization_id = $1 AND id = $2`,
+          [input.organizationId, batch.case_id],
+        );
       const missingRequired = await client
         .query<{ count: number }>(
           `SELECT count(*)::integer AS count FROM interview_topics
@@ -377,6 +729,26 @@ export class KnowledgeStore {
        VALUES ($1, $2, $3, $4, $5::claim_relation_kind)`,
       [organizationId, caseId, sourceClaimId, targetClaimId, relation],
     );
+  }
+
+  async #assertExistingSource(
+    client: PoolClient,
+    input: {
+      organizationId: string;
+      caseId: string;
+      source: ExistingClaimSource;
+    },
+  ): Promise<void> {
+    const query = {
+      MESSAGE: `SELECT 1 FROM messages
+        WHERE organization_id = $1 AND case_id = $2 AND id = $3`,
+      ATTACHMENT: `SELECT 1 FROM attachments
+        WHERE organization_id = $1 AND case_id = $2 AND id = $3 AND status = 'REVIEWED'`,
+      EXTERNAL: `SELECT 1 FROM external_sources
+        WHERE organization_id = $1 AND case_id = $2 AND id = $3`,
+    }[input.source.kind];
+    const source = await client.query(query, [input.organizationId, input.caseId, input.source.id]);
+    if ((source.rowCount ?? 0) !== 1) throw new Error("claim_correction_source_not_allowed");
   }
 
   async #invocationClaimIds(client: PoolClient, organizationId: string, invocationId: string) {
