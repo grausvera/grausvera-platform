@@ -9,6 +9,41 @@ import {
 
 export const dynamic = "force-dynamic";
 
+const labels: Record<string, string> = {
+  HUMAN_ACTION_OVERDUE: "Atención humana atrasada",
+  PROVIDER_EFFECT_UNCERTAIN: "Entrega pendiente de conciliación",
+  MODEL_BUDGET_ALERT: "Presupuesto de modelos en observación",
+  MODEL_BUDGET_LIMIT: "Límite de modelos alcanzado",
+  HUMAN_ASSISTANCE_REQUESTED: "Atender solicitud humana",
+  ENGINEER_REVIEW: "Revisar como especialista",
+  RECONCILE_PROVIDER_EFFECT: "Conciliar con el proveedor antes de reenviar",
+  CONTINUE_MANUALLY_OR_REVIEW_BUDGET: "Continuar manualmente o revisar presupuesto",
+  NEW: "Nuevo",
+  AWAITING_CONSENT: "Esperando consentimiento",
+  INTERVIEWING: "En entrevista",
+  PAUSED: "En pausa",
+  NEEDS_INFORMATION: "Necesita información",
+  READY_FOR_SYNTHESIS: "Listo para preparar el brief",
+  SYNTHESIZING: "Preparando brief",
+  AWAITING_EMAIL_VERIFICATION: "Esperando verificación de correo",
+  PROSPECT_CONFIRMATION: "Esperando confirmación",
+  QUALIFIED: "Calificado",
+  NOT_A_FIT: "No aplicable",
+  CLOSED: "Cerrado",
+  PENDING: "Pendiente",
+  APPROVED: "Aprobada",
+  REJECTED: "Rechazada",
+};
+
+function readable(value: string | null | undefined) {
+  if (!value) return "Sin siguiente acción";
+  return labels[value] ?? value.toLowerCase().replaceAll("_", " ");
+}
+
+function shortId(id: string) {
+  return id.slice(0, 8);
+}
+
 export default async function OperatorConsolePage() {
   const principal = await requireOperator();
   const store = getOperatorStore();
@@ -103,11 +138,23 @@ export default async function OperatorConsolePage() {
             {operation.alerts.map((alert) => (
               <li key={`${alert.code}:${alert.evidence}`}>
                 <strong>
-                  {alert.severity} · {alert.code}
+                  {alert.severity} · {readable(alert.code)}
                 </strong>
-                <span>{alert.action}</span>
-                <small>Responsable: {alert.owner}</small>
-                <small>Evidencia: {alert.evidence}</small>
+                <span>{readable(alert.action)}</span>
+                <small>Responsable: operador de grausvera</small>
+                {alert.evidence.startsWith("case:") ? (
+                  <Link href={`/console/casos/${alert.evidence.slice(5).split("@")[0]}`}>
+                    Abrir caso {shortId(alert.evidence.slice(5).split("@")[0] ?? "")}
+                  </Link>
+                ) : (
+                  <small>Evidencia operativa disponible</small>
+                )}
+                <details>
+                  <summary>Detalles técnicos</summary>
+                  <small>
+                    {alert.code} · {alert.action} · {alert.evidence}
+                  </small>
+                </details>
               </li>
             ))}
           </ul>
@@ -124,8 +171,8 @@ export default async function OperatorConsolePage() {
                 <Link href={`/console/revisiones/${revision.id}`}>
                   Revisión {revision.revisionNumber}
                 </Link>
-                <span>{revision.reviewStatus ?? revision.status}</span>
-                <small>Caso {revision.caseId}</small>
+                <span>{readable(revision.reviewStatus ?? revision.status)}</span>
+                <small>Caso {shortId(revision.caseId)}</small>
               </li>
             ))}
           </ul>
@@ -137,9 +184,13 @@ export default async function OperatorConsolePage() {
         <ul className="console-case-list">
           {cases.map((item) => (
             <li key={item.id}>
-              <Link href={`/console/casos/${item.id}`}>{item.id}</Link>
-              <span>{item.status}</span>
-              <small>{item.nextAction ?? "Sin siguiente acción"}</small>
+              <Link href={`/console/casos/${item.id}`}>Caso {shortId(item.id)}</Link>
+              <span>{readable(item.status)}</span>
+              <small>{readable(item.nextAction)}</small>
+              <details>
+                <summary>Identificador técnico</summary>
+                <small>{item.id}</small>
+              </details>
             </li>
           ))}
         </ul>
