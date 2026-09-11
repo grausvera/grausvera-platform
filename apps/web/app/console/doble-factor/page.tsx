@@ -5,12 +5,24 @@ import { authClient } from "../../../lib/auth-client";
 
 export default function VerifyTwoFactorPage() {
   const [error, setError] = useState("");
+  const [recoveryError, setRecoveryError] = useState("");
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     const code = String(new FormData(event.currentTarget).get("code"));
     const result = await authClient.twoFactor.verifyTotp({ code, trustDevice: false });
     if (result.error) setError("El código no es válido o ha expirado.");
+    else window.location.assign("/console");
+  }
+
+  async function recover(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const code = String(new FormData(event.currentTarget).get("backupCode"));
+    const result = await authClient.twoFactor.verifyBackupCode({
+      code,
+      trustDevice: false,
+    });
+    if (result.error) setRecoveryError("El código de recuperación no es válido o ya fue usado.");
     else window.location.assign("/console");
   }
 
@@ -33,6 +45,17 @@ export default function VerifyTwoFactorPage() {
           <button type="submit">Verificar</button>
           {error && <p role="alert">{error}</p>}
         </form>
+        <details>
+          <summary>Usar un código de recuperación</summary>
+          <form onSubmit={recover} className="console-form">
+            <label>
+              Código de recuperación
+              <input name="backupCode" autoComplete="one-time-code" required />
+            </label>
+            <button type="submit">Recuperar acceso</button>
+            {recoveryError && <p role="alert">{recoveryError}</p>}
+          </form>
+        </details>
       </section>
     </main>
   );

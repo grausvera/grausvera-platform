@@ -17,6 +17,7 @@ function configureAuth(connectionString: string, secret: string, allowProvisioni
     session: {
       expiresIn: 60 * 60 * 8,
       updateAge: 60 * 60,
+      freshAge: 60 * 5,
       cookieCache: { enabled: false },
     },
     advanced: {

@@ -153,6 +153,12 @@ export const briefRevisionStatus = pgEnum("brief_revision_status", [
   "WITHDRAWN",
 ]);
 export const briefRevisionCreator = pgEnum("brief_revision_creator", ["HUMAN", "MODEL"]);
+export const briefReviewStatus = pgEnum("brief_review_status", ["PENDING", "APPROVED", "REJECTED"]);
+export const briefApprovalStatus = pgEnum("brief_approval_status", [
+  "ACTIVE",
+  "REVOKED",
+  "EXPIRED",
+]);
 export const briefSynthesisStatus = pgEnum("brief_synthesis_status", [
   "READY",
   "RUNNING",
@@ -1948,6 +1954,123 @@ export const briefRevisionClaims = pgTable(
       "brief_revision_claims_values_check",
       sql`${t.position} >= 0 and length(${t.claimContentHash}) = 64
         and ${t.claimContentHash} ~ '^[0-9a-f]{64}$'`,
+    ),
+  ],
+);
+
+export const briefReviews = pgTable(
+  "brief_reviews",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id").notNull(),
+    caseId: uuid("case_id").notNull(),
+    briefId: uuid("brief_id").notNull(),
+    revisionId: uuid("revision_id").notNull(),
+    reviewerUserId: text("reviewer_user_id").notNull(),
+    status: briefReviewStatus("status").default("PENDING").notNull(),
+    comments: text("comments"),
+    submittedAt: timestamp("submitted_at", { withTimezone: true }).defaultNow().notNull(),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.organizationId, t.caseId, t.briefId, t.revisionId],
+      foreignColumns: [
+        briefRevisions.organizationId,
+        briefRevisions.caseId,
+        briefRevisions.briefId,
+        briefRevisions.id,
+      ],
+      name: "brief_reviews_revision_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.organizationId, t.reviewerUserId],
+      foreignColumns: [operatorMemberships.organizationId, operatorMemberships.userId],
+      name: "brief_reviews_reviewer_fk",
+    }).onDelete("restrict"),
+    unique("brief_reviews_membership_unique").on(
+      t.organizationId,
+      t.caseId,
+      t.briefId,
+      t.revisionId,
+      t.id,
+    ),
+    unique("brief_reviews_revision_unique").on(t.organizationId, t.revisionId),
+    index("brief_reviews_queue_idx").on(
+      t.organizationId,
+      t.reviewerUserId,
+      t.status,
+      t.submittedAt,
+    ),
+    check(
+      "brief_reviews_decision_check",
+      sql`((${t.status} = 'PENDING' and ${t.decidedAt} is null)
+        or (${t.status} in ('APPROVED', 'REJECTED') and ${t.decidedAt} is not null))
+        and (${t.comments} is null or length(btrim(${t.comments})) > 0)`,
+    ),
+  ],
+);
+
+export const briefApprovals = pgTable(
+  "brief_approvals",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id").notNull(),
+    caseId: uuid("case_id").notNull(),
+    briefId: uuid("brief_id").notNull(),
+    revisionId: uuid("revision_id").notNull(),
+    reviewId: uuid("review_id").notNull(),
+    snapshotHash: text("snapshot_hash").notNull(),
+    approvedByUserId: text("approved_by_user_id").notNull(),
+    deliveryPurpose: text("delivery_purpose").default("BRIEF_DELIVERY").notNull(),
+    authenticationMethod: text("authentication_method").notNull(),
+    authenticatedAt: timestamp("authenticated_at", { withTimezone: true }).notNull(),
+    status: briefApprovalStatus("status").default("ACTIVE").notNull(),
+    approvedAt: timestamp("approved_at", { withTimezone: true }).defaultNow().notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.organizationId, t.caseId, t.briefId, t.revisionId, t.reviewId],
+      foreignColumns: [
+        briefReviews.organizationId,
+        briefReviews.caseId,
+        briefReviews.briefId,
+        briefReviews.revisionId,
+        briefReviews.id,
+      ],
+      name: "brief_approvals_review_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.organizationId, t.approvedByUserId],
+      foreignColumns: [operatorMemberships.organizationId, operatorMemberships.userId],
+      name: "brief_approvals_operator_fk",
+    }).onDelete("restrict"),
+    unique("brief_approvals_membership_unique").on(
+      t.organizationId,
+      t.caseId,
+      t.briefId,
+      t.revisionId,
+      t.id,
+    ),
+    uniqueIndex("brief_approvals_active_unique")
+      .on(t.organizationId, t.revisionId, t.deliveryPurpose)
+      .where(sql`${t.status} = 'ACTIVE'`),
+    index("brief_approvals_case_idx").on(t.organizationId, t.caseId, t.status, t.approvedAt),
+    check(
+      "brief_approvals_values_check",
+      sql`length(${t.snapshotHash}) = 64 and ${t.snapshotHash} ~ '^[0-9a-f]{64}$'
+        and ${t.deliveryPurpose} = 'BRIEF_DELIVERY'
+        and ${t.authenticationMethod} = 'PASSWORD_TOTP'
+        and ${t.authenticatedAt} <= ${t.approvedAt}
+        and (${t.expiresAt} is null or ${t.expiresAt} > ${t.approvedAt})
+        and ((${t.status} = 'ACTIVE' and ${t.revokedAt} is null)
+          or (${t.status} in ('REVOKED', 'EXPIRED') and ${t.revokedAt} is not null))`,
     ),
   ],
 );
