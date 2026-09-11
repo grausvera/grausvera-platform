@@ -85,6 +85,27 @@
       "when": 1789872000000,
       "tag": "0011_safe_attachments",
       "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1789958400000,
+      "tag": "0012_interviews",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1790044800000,
+      "tag": "0013_model_extraction",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1790131200000,
+      "tag": "0014_next_action_proposals",
+      "breakpoints": true
     }
   ]
 }

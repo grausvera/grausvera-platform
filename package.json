@@ -21,7 +21,7 @@
     "operator:provision": "node --experimental-strip-types --env-file-if-exists=.env apps/web/scripts/provision-operator.ts",
     "test:contracts": "vitest run --config vitest.contracts.config.ts",
     "test:e2e": "playwright test",
-    "test:eval": "node scripts/pending-suite.mjs test:eval TASK-GP-025",
+    "test:eval": "vitest run --config vitest.eval.config.ts",
     "test:integration": "node --env-file-if-exists=.env node_modules/vitest/vitest.mjs run --config vitest.integration.config.ts",
     "test:recovery": "node scripts/pending-suite.mjs test:recovery TASK-GP-061",
     "test:security": "node --env-file-if-exists=.env node_modules/vitest/vitest.mjs run --config vitest.security.config.ts",

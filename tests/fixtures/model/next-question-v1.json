@@ -1,0 +1,50 @@
+{
+  "version": 1,
+  "cases": [
+    {
+      "name": "single-missing-topic-question",
+      "sufficient": false,
+      "output": {
+        "action": "ASK",
+        "question": "¿Qué resultado deseas obtener?",
+        "reasonCode": "MISSING_REQUIRED_TOPIC",
+        "targetTopic": "PROJECT_INTENT",
+        "referencedClaimIds": []
+      },
+      "expectedValid": true
+    },
+    {
+      "name": "brief-summary",
+      "sufficient": false,
+      "output": {
+        "action": "SUMMARIZE",
+        "summary": "La iniciativa busca organizar solicitudes.",
+        "reasonCode": "CONFIRM_UNDERSTANDING",
+        "referencedClaimIds": []
+      },
+      "expectedValid": true
+    },
+    {
+      "name": "two-questions-are-rejected",
+      "sufficient": false,
+      "output": {
+        "action": "ASK",
+        "question": "¿Qué necesitas? ¿Para cuándo?",
+        "reasonCode": "MISSING_REQUIRED_TOPIC",
+        "targetTopic": "PROJECT_INTENT",
+        "referencedClaimIds": []
+      },
+      "expectedValid": false
+    },
+    {
+      "name": "ready-needs-platform-sufficiency",
+      "sufficient": false,
+      "output": {
+        "action": "READY",
+        "reasonCode": "MODEL_THINKS_READY",
+        "referencedClaimIds": []
+      },
+      "expectedValid": false
+    }
+  ]
+}
