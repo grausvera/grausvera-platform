@@ -2,7 +2,12 @@
 
 import { randomUUID } from "node:crypto";
 import { revalidatePath } from "next/cache";
-import { getOperatorStore, requireOperator } from "../../lib/operator-session";
+import {
+  getBriefSynthesisStore,
+  getKnowledgeStore,
+  getOperatorStore,
+  requireOperator,
+} from "../../lib/operator-session";
 
 function required(form: FormData, field: string): string {
   const value = form.get(field);
@@ -47,6 +52,50 @@ export async function respondToCase(form: FormData) {
       idempotencyKey: required(form, "idempotencyKey"),
       correlationId: randomUUID(),
     });
+  } finally {
+    await store.close();
+  }
+  revalidatePath(`/console/casos/${caseId}`);
+}
+
+export async function correctClaim(form: FormData) {
+  const principal = await requireOperator();
+  const caseId = required(form, "caseId");
+  const [sourceKind, sourceId, ...unexpected] = required(form, "sourceReference").split(":");
+  if (
+    !sourceKind ||
+    !sourceId ||
+    unexpected.length > 0 ||
+    !["MESSAGE", "ATTACHMENT", "EXTERNAL"].includes(sourceKind)
+  )
+    throw new Error("operator_source_kind_invalid");
+  const confidenceBasisPoints = Number(required(form, "confidenceBasisPoints"));
+  const store = getKnowledgeStore();
+  try {
+    await store.correctClaim(principal, {
+      caseId,
+      targetClaimId: required(form, "claimId"),
+      replacement: required(form, "replacement"),
+      confidenceBasisPoints,
+      source: {
+        kind: sourceKind as "MESSAGE" | "ATTACHMENT" | "EXTERNAL",
+        id: sourceId,
+        relation: "SUPPORTS",
+      },
+      correlationId: randomUUID(),
+    });
+  } finally {
+    await store.close();
+  }
+  revalidatePath(`/console/casos/${caseId}`);
+}
+
+export async function requestBriefSynthesis(form: FormData) {
+  const principal = await requireOperator();
+  const caseId = required(form, "caseId");
+  const store = getBriefSynthesisStore();
+  try {
+    await store.request(principal, { caseId, correlationId: randomUUID() });
   } finally {
     await store.close();
   }

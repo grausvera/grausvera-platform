@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { InterviewStore } from "../../packages/database/src";
+import { evaluateCaseMaterialSufficiency, InterviewStore } from "../../packages/database/src";
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) throw new Error("DATABASE_URL is required for integration tests");
@@ -48,13 +48,21 @@ beforeAll(async () => {
   );
   consentPolicyId = await pool
     .query<{ id: string }>(
-      `INSERT INTO consent_policies
-        (id, organization_id, purpose, channel, locale, version, notice_text,
-         notice_hash, scope, effective_at)
-       VALUES ($1, $2, 'DISCOVERY', 'WHATSAPP', 'es-PE-interview', 1,
-         'synthetic notice', repeat('b', 64), 'PROJECT_DISCOVERY', now() - interval '1 hour')
-       RETURNING id`,
-      [randomUUID(), organizationId],
+      `WITH inserted AS (
+         INSERT INTO consent_policies
+          (organization_id, purpose, channel, locale, version, notice_text,
+           notice_hash, scope, effective_at)
+         VALUES ($1, 'DISCOVERY', 'WHATSAPP', 'es-PE-interview', 281,
+           'synthetic notice', repeat('b', 64), 'PROJECT_DISCOVERY', now() - interval '1 hour')
+         ON CONFLICT (organization_id, purpose, channel, locale, version) DO NOTHING
+         RETURNING id
+       )
+       SELECT id FROM inserted UNION ALL
+       SELECT id FROM consent_policies WHERE organization_id = $1
+         AND purpose = 'DISCOVERY' AND channel = 'WHATSAPP'
+         AND locale = 'es-PE-interview' AND version = 281
+       LIMIT 1`,
+      [organizationId],
     )
     .then((result) => result.rows[0]?.id ?? "");
 });
@@ -107,7 +115,7 @@ async function createCase(consented: boolean) {
       (organization_id, case_id, person_id, contact_point_id, policy_id, purpose,
        action, source_message_id, policy_version, notice_hash, channel, locale,
        scope, occurred_at, idempotency_key)
-     VALUES ($1, $2, $3, $4, $5, 'DISCOVERY', 'ACCEPTED', $6, 1,
+     VALUES ($1, $2, $3, $4, $5, 'DISCOVERY', 'ACCEPTED', $6, 281,
        repeat('b', 64), 'WHATSAPP', 'es-PE-interview', 'PROJECT_DISCOVERY', now(), $7)`,
     [
       organizationId,
@@ -193,6 +201,82 @@ describe("persistent interview", () => {
       correlationId: randomUUID(),
     });
     expect(completed).toMatchObject({ status: "SUFFICIENT", pendingQuestion: null, version: 3 });
+  });
+
+  it("records an explicit brief request and treats unknown constraints deliberately", async () => {
+    const caseId = await createCase(true);
+    const created = await store.create({ organizationId, caseId, correlationId: randomUUID() });
+    const conversationId = await pool
+      .query<{ id: string }>(`SELECT id FROM conversations WHERE case_id = $1`, [caseId])
+      .then((result) => result.rows[0]?.id ?? "");
+    const messageId = randomUUID();
+    await pool.query(
+      `INSERT INTO messages
+        (id, organization_id, case_id, conversation_id, provider_connection_id, direction,
+         provider_message_id, message_type, content_bytes, provider_occurred_at,
+         sender_person_id, sender_contact_point_id)
+       VALUES ($1, $2, $3, $4, $5, 'INBOUND', $6, 'text', $7, now(), $8, $9)`,
+      [
+        messageId,
+        organizationId,
+        caseId,
+        conversationId,
+        connectionId,
+        `wamid.interview.${messageId}`,
+        Buffer.from("Quiero recibir el resumen del proyecto"),
+        personId,
+        contactPointId,
+      ],
+    );
+    const resolved = await store.update({
+      organizationId,
+      caseId,
+      expectedVersion: created.interview.version,
+      topicStates: {
+        PROJECT_INTENT: "CAPTURED",
+        AUDIENCE: "CAPTURED",
+        DESIRED_OUTCOME: "CAPTURED",
+        CONTEXT: "CAPTURED",
+        CONSTRAINTS: "DECLARED_UNKNOWN",
+      },
+      correlationId: randomUUID(),
+    });
+    expect(resolved.status).toBe("SUFFICIENT");
+    const client = await pool.connect();
+    try {
+      await expect(
+        evaluateCaseMaterialSufficiency(client, organizationId, caseId),
+      ).resolves.toEqual({ sufficient: false, missing: ["BRIEF_REQUEST"], blockers: [] });
+    } finally {
+      client.release();
+    }
+
+    const requested = await store.recordBriefRequest({
+      organizationId,
+      caseId,
+      sourceMessageId: messageId,
+      correlationId: randomUUID(),
+    });
+    expect(requested).toMatchObject({
+      changed: true,
+      interview: { briefRequestMessageId: messageId, version: 3 },
+    });
+    const materialClient = await pool.connect();
+    try {
+      await expect(
+        evaluateCaseMaterialSufficiency(materialClient, organizationId, caseId),
+      ).resolves.toEqual({ sufficient: true, missing: [], blockers: [] });
+    } finally {
+      materialClient.release();
+    }
+    await expect(
+      store.recordBriefRequest({
+        organizationId,
+        caseId,
+        sourceMessageId: messageId,
+        correlationId: randomUUID(),
+      }),
+    ).resolves.toMatchObject({ changed: false });
   });
 
   it("keeps an interview pinned to its immutable policy version", async () => {

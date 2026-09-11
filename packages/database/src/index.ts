@@ -1,5 +1,6 @@
 export * from "./attachments.js";
 export * from "./budget.js";
+export * from "./brief-synthesis.js";
 export * from "./consent.js";
 export * from "./health.js";
 export * from "./interview.js";
@@ -11,4 +12,5 @@ export * from "./next-action.js";
 export * from "./object-storage.js";
 export * from "./operator-console.js";
 export * from "./quota.js";
+export * from "./research.js";
 export * from "./schema.js";

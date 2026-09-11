@@ -117,6 +117,11 @@ describe("durable messaging", () => {
   });
 
   it("claims once under concurrency, preserves uncertainty, and honors emitter shutdown", async () => {
+    await pool.query(
+      `UPDATE outbox_events SET available_at = now() + interval '1 hour'
+       WHERE case_id <> $1 AND status = 'PENDING'`,
+      [caseId],
+    );
     const firstPort = new FakeMessagingPort();
     const secondPort = new FakeMessagingPort();
     const first = new OutboxDispatcher(store, firstPort);

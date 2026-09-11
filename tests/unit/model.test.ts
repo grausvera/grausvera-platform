@@ -154,6 +154,40 @@ describe("NextQuestionV1", () => {
     ).toBe(false);
   });
 
+  it("uses the same question contract for material resolution targets", () => {
+    const materialContext: ContextPackageV1 = {
+      ...questionContext,
+      sufficiency: {
+        sufficient: false,
+        missing: ["BRIEF_REQUEST", `CONTRADICTION:${claimId}`],
+      },
+    };
+    expect(
+      validateNextQuestion(
+        {
+          action: "ASK",
+          question: "¿Quieres que prepare el resumen del proyecto?",
+          reasonCode: "BRIEF_REQUEST_REQUIRED",
+          targetTopic: "BRIEF_REQUEST",
+          referencedClaimIds: [],
+        },
+        materialContext,
+      ),
+    ).toBe(true);
+    expect(
+      validateNextQuestion(
+        {
+          action: "ASK",
+          question: "¿Puedes aclarar cuál afirmación es correcta?",
+          reasonCode: "CONTRADICTION_REQUIRES_RESOLUTION",
+          targetTopic: "CONTRADICTION:not-in-context",
+          referencedClaimIds: [],
+        },
+        materialContext,
+      ),
+    ).toBe(false);
+  });
+
   it("allows READY only when Platform reports deterministic sufficiency", () => {
     const ready = {
       action: "READY",

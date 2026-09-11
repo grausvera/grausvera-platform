@@ -120,6 +120,41 @@
       "when": 1790304000000,
       "tag": "0016_case_association_clarification",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1790390400000,
+      "tag": "0017_extended_claim_sources",
+      "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1790476800000,
+      "tag": "0018_bounded_research",
+      "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1790563200000,
+      "tag": "0019_material_sufficiency",
+      "breakpoints": true
+    },
+    {
+      "idx": 20,
+      "version": "7",
+      "when": 1790649600000,
+      "tag": "0020_brief_revisions",
+      "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1790736000000,
+      "tag": "0021_brief_synthesis_requests",
+      "breakpoints": true
     }
   ]
 }
