@@ -57,6 +57,22 @@ export const confirmationRequestStatus = pgEnum("confirmation_request_status", [
   "REVOKED",
   "EXPIRED",
 ]);
+export const privacyRequestKind = pgEnum("privacy_request_kind", [
+  "ACCESS_EXPORT",
+  "RECTIFICATION",
+  "ERASURE",
+]);
+export const privacyRequestStatus = pgEnum("privacy_request_status", [
+  "IN_PROGRESS",
+  "COMPLETED",
+  "REJECTED",
+]);
+export const retentionActionStatus = pgEnum("retention_action_status", [
+  "JOURNAL_PENDING",
+  "JOURNALED",
+  "EXECUTING",
+  "COMPLETED",
+]);
 export const participantRole = pgEnum("participant_role", [
   "REQUESTER",
   "REPRESENTATIVE",
@@ -682,6 +698,7 @@ export const inboxEvents = pgTable(
     status: inboxStatus("status").default("RECEIVED").notNull(),
     receivedAt: timestamp("received_at", { withTimezone: true }).defaultNow().notNull(),
     processedAt: timestamp("processed_at", { withTimezone: true }),
+    processingStartedAt: timestamp("processing_started_at", { withTimezone: true }),
     attempts: integer("attempts").default(0).notNull(),
     lastErrorCode: text("last_error_code"),
   },
@@ -2495,6 +2512,119 @@ export const confirmations = pgTable(
     check(
       "confirmations_values_check",
       sql`${t.purpose} = 'NEED_AND_CONTINUE' and ${t.normalizedAction} = 'CONFIRMO'`,
+    ),
+  ],
+);
+
+export const privacyRequests = pgTable(
+  "privacy_requests",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id").notNull(),
+    caseId: uuid("case_id").notNull(),
+    personId: uuid("person_id").notNull(),
+    kind: privacyRequestKind("kind").notNull(),
+    status: privacyRequestStatus("status").default("IN_PROGRESS").notNull(),
+    requestedByUserId: text("requested_by_user_id").notNull(),
+    identityVerifiedAt: timestamp("identity_verified_at", { withTimezone: true }).notNull(),
+    scope: jsonb("scope").default({}).notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    rejectionReason: text("rejection_reason"),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.organizationId, t.caseId],
+      foreignColumns: [prospectCases.organizationId, prospectCases.id],
+      name: "privacy_requests_case_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.organizationId, t.personId],
+      foreignColumns: [people.organizationId, people.id],
+      name: "privacy_requests_person_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.organizationId, t.requestedByUserId],
+      foreignColumns: [operatorMemberships.organizationId, operatorMemberships.userId],
+      name: "privacy_requests_operator_fk",
+    }).onDelete("restrict"),
+    unique("privacy_requests_idempotency_unique").on(t.organizationId, t.idempotencyKey),
+    unique("privacy_requests_membership_unique").on(t.organizationId, t.caseId, t.id),
+    check("privacy_requests_idempotency_not_empty", sql`length(btrim(${t.idempotencyKey})) > 0`),
+    check(
+      "privacy_requests_lifecycle_check",
+      sql`(${t.status} = 'IN_PROGRESS' and ${t.completedAt} is null and ${t.rejectionReason} is null)
+        or (${t.status} = 'COMPLETED' and ${t.completedAt} is not null and ${t.rejectionReason} is null)
+        or (${t.status} = 'REJECTED' and ${t.completedAt} is not null and length(btrim(${t.rejectionReason})) > 0)`,
+    ),
+  ],
+);
+
+export const retentionActions = pgTable(
+  "retention_actions",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id").notNull(),
+    caseId: uuid("case_id").notNull(),
+    privacyRequestId: uuid("privacy_request_id").notNull(),
+    status: retentionActionStatus("status").default("JOURNAL_PENDING").notNull(),
+    opaqueSubjectId: text("opaque_subject_id").notNull(),
+    scope: jsonb("scope").default({}).notNull(),
+    cutoffAt: timestamp("cutoff_at", { withTimezone: true }).notNull(),
+    integrityHash: text("integrity_hash").notNull(),
+    journalCheckpoint: text("journal_checkpoint"),
+    journalConfirmedAt: timestamp("journal_confirmed_at", { withTimezone: true }),
+    lastErrorCode: text("last_error_code"),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.organizationId, t.caseId, t.privacyRequestId],
+      foreignColumns: [privacyRequests.organizationId, privacyRequests.caseId, privacyRequests.id],
+      name: "retention_actions_request_fk",
+    }).onDelete("restrict"),
+    unique("retention_actions_request_unique").on(t.privacyRequestId),
+    check("retention_actions_subject_not_empty", sql`${t.opaqueSubjectId} ~ '^[0-9a-f]{64}$'`),
+    check("retention_actions_integrity_hash", sql`${t.integrityHash} ~ '^[0-9a-f]{64}$'`),
+    check("retention_actions_scope_array", sql`jsonb_typeof(${t.scope}) = 'array'`),
+    check(
+      "retention_actions_journal_check",
+      sql`(${t.status} = 'JOURNAL_PENDING' and ${t.journalCheckpoint} is null and ${t.journalConfirmedAt} is null)
+        or (${t.status} in ('JOURNALED','EXECUTING','COMPLETED') and length(${t.journalCheckpoint}) > 0 and ${t.journalConfirmedAt} is not null)`,
+    ),
+  ],
+);
+
+export const retentionDispositionSteps = pgTable(
+  "retention_disposition_steps",
+  {
+    actionId: uuid("action_id")
+      .notNull()
+      .references(() => retentionActions.id, { onDelete: "restrict" }),
+    step: text("step").notNull(),
+    status: text("status").default("PENDING").notNull(),
+    attempts: integer("attempts").default(0).notNull(),
+    disposedCount: integer("disposed_count").default(0).notNull(),
+    resultCheckpoint: text("result_checkpoint"),
+    lastErrorCode: text("last_error_code"),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    updatedAt,
+  },
+  (t) => [
+    primaryKey({ columns: [t.actionId, t.step], name: "retention_disposition_steps_pk" }),
+    check(
+      "retention_disposition_steps_step_check",
+      sql`${t.step} in ('OBJECTS','DATABASE','JOBS','DERIVATIVES','RESULT_JOURNAL')`,
+    ),
+    check(
+      "retention_disposition_steps_status_check",
+      sql`${t.status} in ('PENDING','COMPLETED') and ${t.attempts} >= 0 and ${t.disposedCount} >= 0
+        and ((${t.status} = 'PENDING' and ${t.completedAt} is null)
+          or (${t.status} = 'COMPLETED' and ${t.completedAt} is not null))
+        and (${t.step} = 'RESULT_JOURNAL' or ${t.resultCheckpoint} is null)`,
     ),
   ],
 );

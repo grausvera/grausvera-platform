@@ -1,6 +1,8 @@
 node_modules/
 .next/
 dist/
+.data/
+.recovery/
 playwright-report/
 test-results/
 *.tsbuildinfo

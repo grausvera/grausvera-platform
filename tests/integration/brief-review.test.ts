@@ -1,7 +1,17 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { BriefReviewStore } from "../../packages/database/src";
+import {
+  AesGcmEmailSecretCodec,
+  BriefDeliveryDispatcher,
+  FakeEmailPort,
+} from "../../apps/worker/src/email";
+import {
+  BriefDeliveryService,
+  BriefReviewStore,
+  EmailDeliveryStore,
+  type ObjectPort,
+} from "../../packages/database/src";
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) throw new Error("DATABASE_URL is required for integration tests");
@@ -220,6 +230,164 @@ describe("governed brief review workflow", () => {
       new_base: item.revisionId,
       new_status: "DRAFT",
     });
+  });
+
+  it("creates, reviews, approves, and delivers a manual brief with models disabled", async () => {
+    const caseId = randomUUID();
+    const personId = randomUUID();
+    const contactPointId = randomUUID();
+    const policyId = randomUUID();
+    const policyVersion = Math.floor(Math.random() * 1_000_000_000) + 10_000;
+    await pool.query(
+      `INSERT INTO prospect_cases (id,organization_id,status,knowledge_version)
+       VALUES ($1,$2,'READY_FOR_SYNTHESIS',1)`,
+      [caseId, organizationId],
+    );
+    await pool.query(
+      `INSERT INTO operator_case_assignments (organization_id,case_id,user_id) VALUES ($1,$2,$3)`,
+      [organizationId, caseId, operatorUserId],
+    );
+    await pool.query(`INSERT INTO people (id,organization_id) VALUES ($1,$2)`, [
+      personId,
+      organizationId,
+    ]);
+    await pool.query(
+      `INSERT INTO case_participants (organization_id,case_id,person_id,role)
+       VALUES ($1,$2,$3,'REQUESTER')`,
+      [organizationId, caseId, personId],
+    );
+    await pool.query(
+      `INSERT INTO contact_points
+        (id,organization_id,person_id,kind,value_ciphertext,fingerprint,source,purpose,verified_at)
+       VALUES ($1,$2,$3,'EMAIL','sealed@example.invalid',$4,'TEST','BRIEF_DELIVERY',now())`,
+      [contactPointId, organizationId, personId, randomUUID()],
+    );
+    await pool.query(
+      `INSERT INTO interview_policies (id,organization_id,version,topics,effective_at)
+       VALUES ($1,$2,$3,'[{"key":"PROJECT_INTENT","required":true}]',now()+interval '1 day')`,
+      [policyId, organizationId, policyVersion],
+    );
+    await pool.query(
+      `INSERT INTO interviews (organization_id,case_id,policy_id,status)
+       VALUES ($1,$2,$3,'SUFFICIENT')`,
+      [organizationId, caseId, policyId],
+    );
+    await pool.query(
+      `INSERT INTO claims
+        (organization_id,case_id,kind,category,content,confidence_basis_points,
+         sensitivity,audience,creator)
+       VALUES ($1,$2,'FACT','PROJECT_INTENT','Synthetic manual intent',10000,
+         'CONFIDENTIAL','INTERNAL','HUMAN')`,
+      [organizationId, caseId],
+    );
+    const snapshot = { problem: "Synthetic manually authored brief", warnings: [] };
+    await expect(
+      store.createManual(
+        { ...principal(), twoFactorVerified: false },
+        {
+          caseId,
+          snapshot,
+          reason: "Model provider disabled",
+          correlationId: randomUUID(),
+        },
+      ),
+    ).rejects.toThrow("operator_two_factor_required");
+    const created = await store.createManual(principal(), {
+      caseId,
+      snapshot,
+      reason: "Model provider disabled",
+      correlationId: randomUUID(),
+    });
+    await expect(
+      store.createManual(principal(), {
+        caseId,
+        snapshot,
+        reason: "Model provider disabled",
+        correlationId: randomUUID(),
+      }),
+    ).resolves.toEqual({ ...created, replayed: true });
+    await store.submit(principal(), {
+      revisionId: created.revisionId,
+      correlationId: randomUUID(),
+    });
+    const now = new Date();
+    await store.approve(
+      await recentPrincipal(now),
+      {
+        revisionId: created.revisionId,
+        comments: "Manual evidence reviewed",
+        correlationId: randomUUID(),
+      },
+      now,
+    );
+    const approvalId = await pool
+      .query<{ id: string }>(`SELECT id FROM brief_approvals WHERE revision_id=$1`, [
+        created.revisionId,
+      ])
+      .then((result) => result.rows[0]?.id ?? "");
+    const memory = new Map<string, Uint8Array>();
+    const objects: ObjectPort = {
+      async put(key, bytes) {
+        memory.set(key, bytes);
+      },
+      async get(key) {
+        const bytes = memory.get(key);
+        if (!bytes) throw new Error("object_missing");
+        return bytes;
+      },
+      async remove(key) {
+        memory.delete(key);
+      },
+    };
+    const deliveryService = new BriefDeliveryService(connectionString, objects);
+    const deliveryStore = new EmailDeliveryStore(connectionString);
+    const codec = new AesGcmEmailSecretCodec(Buffer.alloc(32, 7), "manual-flow-v1");
+    const port = new FakeEmailPort([{ kind: "accepted", externalId: `manual-${randomUUID()}` }]);
+    try {
+      const prepared = await deliveryService.prepare({
+        organizationId,
+        caseId,
+        approvalId,
+        briefRevisionId: created.revisionId,
+        contactPointId,
+        destination: "manual@example.invalid",
+        idempotencyKey: `manual-delivery-${randomUUID()}`,
+        sealer: codec,
+        now,
+      });
+      const dispatcher = new BriefDeliveryDispatcher(
+        deliveryService,
+        deliveryStore,
+        objects,
+        port,
+        codec,
+      );
+      await expect(dispatcher.dispatchOne()).resolves.toBe("disabled");
+      dispatcher.setEnabled(true);
+      await expect(dispatcher.dispatchOne()).resolves.toMatchObject({ kind: "accepted" });
+      expect(port.sent).toHaveLength(1);
+      const state = await pool.query(
+        `SELECT r.creator,r.status,d.status delivery_status,o.status outbox_status,
+          (SELECT count(*)::integer FROM model_invocations WHERE case_id=$1) model_invocations,
+          (SELECT count(*)::integer FROM audit_events WHERE case_id=$1
+            AND action='brief_revision.created_manually') manual_audits
+         FROM brief_revisions r JOIN email_deliveries d ON d.revision_id=r.id
+         JOIN outbox_events o ON o.id=d.outbox_event_id
+         WHERE d.id=$2`,
+        [caseId, prepared.deliveryId],
+      );
+      expect(state.rows[0]).toEqual({
+        creator: "HUMAN",
+        status: "APPROVED",
+        delivery_status: "ACCEPTED",
+        outbox_status: "ACCEPTED",
+        model_invocations: 0,
+        manual_audits: 1,
+      });
+    } finally {
+      await deliveryStore.close();
+      await deliveryService.close();
+    }
   });
 
   it("approves without email but leaves delivery pending", async () => {

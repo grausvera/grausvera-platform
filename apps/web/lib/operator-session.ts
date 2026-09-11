@@ -3,6 +3,7 @@ import {
   BriefReviewStore,
   KnowledgeStore,
   OperatorConsoleStore,
+  OperationalInspectionStore,
   type OperatorPrincipal,
 } from "@grausvera/database";
 import { headers } from "next/headers";
@@ -62,6 +63,12 @@ export function getOperatorStore(): OperatorConsoleStore {
   const connectionString = process.env.DATABASE_URL;
   if (!connectionString) throw new Error("DATABASE_URL is required for the operator console");
   return new OperatorConsoleStore(connectionString);
+}
+
+export function getOperationalStore(): OperationalInspectionStore {
+  const connectionString = process.env.DATABASE_URL;
+  if (!connectionString) throw new Error("DATABASE_URL is required for the operator console");
+  return new OperationalInspectionStore(connectionString);
 }
 
 export function getKnowledgeStore(): KnowledgeStore {

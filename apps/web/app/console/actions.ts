@@ -104,6 +104,31 @@ export async function requestBriefSynthesis(form: FormData) {
   revalidatePath(`/console/casos/${caseId}`);
 }
 
+export async function createManualBrief(form: FormData) {
+  const principal = await requireOperator();
+  const caseId = required(form, "caseId");
+  let snapshot: unknown;
+  try {
+    snapshot = JSON.parse(required(form, "snapshot"));
+  } catch {
+    throw new Error("brief_snapshot_invalid");
+  }
+  const store = getBriefReviewStore();
+  try {
+    const created = await store.createManual(principal, {
+      caseId,
+      snapshot,
+      reason: required(form, "reason"),
+      correlationId: randomUUID(),
+    });
+    revalidatePath(`/console/casos/${caseId}`);
+    revalidatePath(`/console/revisiones/${created.revisionId}`);
+    revalidatePath("/console");
+  } finally {
+    await store.close();
+  }
+}
+
 export async function editBriefRevision(form: FormData) {
   const principal = await requireOperator();
   const revisionId = required(form, "revisionId");

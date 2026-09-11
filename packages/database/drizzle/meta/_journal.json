@@ -211,6 +211,34 @@
       "when": 1791427200000,
       "tag": "0029_protect_brief_confirmations",
       "breakpoints": true
+    },
+    {
+      "idx": 30,
+      "version": "7",
+      "when": 1791513600000,
+      "tag": "0030_privacy_requests",
+      "breakpoints": true
+    },
+    {
+      "idx": 31,
+      "version": "7",
+      "when": 1791600000000,
+      "tag": "0031_protect_retention_actions",
+      "breakpoints": true
+    },
+    {
+      "idx": 32,
+      "version": "7",
+      "when": 1791686400000,
+      "tag": "0032_retention_disposition",
+      "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1791772800000,
+      "tag": "0033_inbox_processing_lease",
+      "breakpoints": true
     }
   ]
 }

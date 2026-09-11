@@ -146,6 +146,31 @@ export class AttachmentStore {
       .then((result) => result.rows[0]);
   }
 
+  async authorizeDownload(input: {
+    organizationId: string;
+    caseId: string;
+    providerConnectionId: string;
+    mediaReferenceId: string;
+    providerMediaId: string;
+  }): Promise<void> {
+    const authorized = await this.#pool.query(
+      `SELECT 1 FROM media_references mr
+       JOIN inbox_event_items i ON i.id = mr.inbox_item_id
+       JOIN provider_connections pc ON pc.id = i.provider_connection_id
+         AND pc.organization_id = i.organization_id
+       WHERE i.organization_id = $1 AND i.case_id = $2
+         AND i.provider_connection_id = $3 AND mr.id = $4 AND mr.provider_media_id = $5`,
+      [
+        input.organizationId,
+        input.caseId,
+        input.providerConnectionId,
+        input.mediaReferenceId,
+        input.providerMediaId,
+      ],
+    );
+    if ((authorized.rowCount ?? 0) !== 1) throw new Error("attachment_download_not_authorized");
+  }
+
   async quarantine(input: {
     id: string;
     organizationId: string;
@@ -267,6 +292,7 @@ export class AttachmentService {
     declaredMimeType?: string;
     declaredSha256?: string;
   }) {
+    await this.store.authorizeDownload(input);
     const existing = await this.store.findByMedia(input.organizationId, input.mediaReferenceId);
     if (existing) return { ...existing, created: false };
     await this.store.acquireDownload(input.organizationId, input.providerConnectionId);

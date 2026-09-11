@@ -14,14 +14,26 @@ const allowedOptionalFields = [
   "status",
 ] as const;
 const opaqueValue = /^[a-zA-Z0-9._:-]{1,128}$/;
+const sensitiveOpaqueValue =
+  /(?:^|[._:-])(bearer|canary|credential|password|secret|sentinel)(?:$|[._:-])/i;
+const phoneValue = /^\+?\d{8,15}$/;
 const levelPriority: Record<LogLevel, number> = { debug: 10, info: 20, warn: 30, error: 40 };
+
+function isSafeOpaqueValue(value: unknown): value is string {
+  return (
+    typeof value === "string" &&
+    opaqueValue.test(value) &&
+    !sensitiveOpaqueValue.test(value) &&
+    !phoneValue.test(value)
+  );
+}
 
 function safeValue(key: (typeof allowedOptionalFields)[number], value: unknown): unknown {
   if (key === "durationMs") {
     return typeof value === "number" && Number.isFinite(value) && value >= 0 ? value : undefined;
   }
 
-  return typeof value === "string" && opaqueValue.test(value) ? value : undefined;
+  return isSafeOpaqueValue(value) ? value : undefined;
 }
 
 export function createLogger(
@@ -39,7 +51,7 @@ export function createLogger(
         level,
         service,
         environment,
-        event: typeof event === "string" && opaqueValue.test(event) ? event : "redacted_event",
+        event: isSafeOpaqueValue(event) ? event : "redacted_event",
       };
 
       for (const key of allowedOptionalFields) {

@@ -267,6 +267,28 @@ h1 {
   max-width: 34rem;
 }
 
+.console-operations {
+  margin-bottom: var(--space-8);
+  max-width: none;
+}
+
+.console-metrics {
+  display: grid;
+  gap: var(--space-3);
+  grid-template-columns: repeat(auto-fit, minmax(12rem, 1fr));
+}
+
+.console-metrics div {
+  border: 1px solid var(--color-line);
+  border-radius: var(--radius-small);
+  padding: var(--space-3);
+}
+
+.console-metrics dd {
+  font-size: 1.25rem;
+  margin: var(--space-2) 0 0;
+}
+
 .console-heading,
 .console-actions {
   align-items: center;

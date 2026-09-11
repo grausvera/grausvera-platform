@@ -57,6 +57,10 @@ jobs:
         run: npm run test:contracts
       - name: Run security tests
         run: npm run test:security
+      - name: Run model evaluations
+        run: npm run test:eval
+      - name: Run recovery tests
+        run: npm run test:recovery
       - name: Build
         run: npm run build
       - name: Build OCI image

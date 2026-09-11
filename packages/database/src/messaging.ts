@@ -364,7 +364,7 @@ export class MessagingStore {
       const counts = pending.rows[0] ?? { unresolved: 0, ambiguous: 0 };
       await client.query(
         `UPDATE inbox_events SET status = $2::inbox_status, processed_at = CASE WHEN $2 = 'PROCESSED' THEN now() ELSE NULL END,
-           attempts = attempts + 1, last_error_code = $3 WHERE id = $1`,
+           processing_started_at=NULL,attempts = attempts + 1, last_error_code = $3 WHERE id = $1`,
         [
           inboxEventId,
           counts.ambiguous > 0 ? "NEEDS_ACTION" : counts.unresolved > 0 ? "RECEIVED" : "PROCESSED",
@@ -390,7 +390,8 @@ export class MessagingStore {
          SELECT id FROM inbox_events WHERE status = 'RECEIVED'
          ORDER BY received_at FOR UPDATE SKIP LOCKED LIMIT 1
        )
-       UPDATE inbox_events i SET status = 'PROCESSING', attempts = attempts + 1
+       UPDATE inbox_events i SET status = 'PROCESSING', attempts = attempts + 1,
+         processing_started_at=now()
        FROM candidate WHERE i.id = candidate.id RETURNING i.id, i.payload_bytes`,
     );
     const item = result.rows[0];
@@ -399,16 +400,20 @@ export class MessagingStore {
 
   async releaseInboxAfterFailure(inboxEventId: string, errorCode: string): Promise<void> {
     await this.#pool.query(
-      `UPDATE inbox_events SET status = 'RECEIVED', last_error_code = $2
+      `UPDATE inbox_events SET status = CASE WHEN attempts >= 3 THEN 'NEEDS_ACTION'::inbox_status
+           ELSE 'RECEIVED'::inbox_status END, last_error_code = $2,
+         processing_started_at=NULL
        WHERE id = $1 AND status = 'PROCESSING'`,
       [inboxEventId, errorCode],
     );
   }
 
-  async releaseAbandonedInbox(): Promise<number> {
+  async releaseAbandonedInbox(cutoff = new Date()): Promise<number> {
     const result = await this.#pool.query(
-      `UPDATE inbox_events SET status = 'RECEIVED', last_error_code = 'worker_interrupted'
-       WHERE status = 'PROCESSING'`,
+      `UPDATE inbox_events SET status = 'RECEIVED', last_error_code = 'worker_interrupted',
+         processing_started_at=NULL
+       WHERE status = 'PROCESSING' AND processing_started_at<$1`,
+      [cutoff],
     );
     return result.rowCount ?? 0;
   }

@@ -113,6 +113,137 @@ export class BriefReviewStore {
     }
   }
 
+  async createManual(
+    principal: BriefReviewPrincipal,
+    input: { caseId: string; snapshot: unknown; reason: string; correlationId: string },
+  ): Promise<{ revisionId: string; replayed: boolean }> {
+    if (!input.snapshot || typeof input.snapshot !== "object" || Array.isArray(input.snapshot))
+      throw new Error("brief_snapshot_invalid");
+    const serialized = JSON.stringify(input.snapshot);
+    if (serialized.length > 100_000) throw new Error("brief_snapshot_invalid");
+    const reason = input.reason.trim();
+    if (!reason || reason.length > 500) throw new Error("brief_revision_reason_invalid");
+    const client = await this.#pool.connect();
+    try {
+      await client.query("BEGIN");
+      await this.#authorize(client, principal, input.caseId);
+      const state = await client
+        .query<{ knowledge_version: number; policy_version: number; case_status: string }>(
+          `SELECT c.knowledge_version,p.version policy_version,c.status case_status
+           FROM prospect_cases c JOIN interviews i
+             ON i.organization_id=c.organization_id AND i.case_id=c.id
+           JOIN interview_policies p ON p.organization_id=i.organization_id AND p.id=i.policy_id
+           WHERE c.organization_id=$1 AND c.id=$2
+             AND c.status IN ('READY_FOR_SYNTHESIS','ENGINEER_REVIEW')
+             AND coalesce(c.next_action,'')<>'PRIVACY_ERASURE_PENDING'
+           FOR UPDATE OF c`,
+          [principal.organizationId, input.caseId],
+        )
+        .then((result) => result.rows[0]);
+      if (!state) throw new Error("manual_brief_not_authorized");
+      await client.query(
+        `INSERT INTO briefs (organization_id,case_id) VALUES ($1,$2)
+         ON CONFLICT (organization_id,case_id,purpose) DO NOTHING`,
+        [principal.organizationId, input.caseId],
+      );
+      const brief = await client
+        .query<{ id: string }>(
+          `SELECT id FROM briefs WHERE organization_id=$1 AND case_id=$2 AND purpose='DISCOVERY'
+           FOR UPDATE`,
+          [principal.organizationId, input.caseId],
+        )
+        .then((result) => result.rows[0]);
+      if (!brief) throw new Error("manual_brief_unavailable");
+      const snapshotHash = await client
+        .query<{ hash: string }>(`SELECT encode(digest($1::jsonb::text,'sha256'),'hex') hash`, [
+          serialized,
+        ])
+        .then((result) => result.rows[0]?.hash ?? "");
+      const candidate = await client
+        .query<{
+          id: string;
+          snapshot_hash: string;
+          creator: string;
+          created_by_user_id: string | null;
+        }>(
+          `SELECT id,snapshot_hash,creator,created_by_user_id FROM brief_revisions
+           WHERE organization_id=$1 AND brief_id=$2 AND is_candidate FOR UPDATE`,
+          [principal.organizationId, brief.id],
+        )
+        .then((result) => result.rows[0]);
+      if (candidate) {
+        if (
+          candidate.snapshot_hash === snapshotHash &&
+          candidate.creator === "HUMAN" &&
+          candidate.created_by_user_id === principal.userId
+        ) {
+          await client.query("COMMIT");
+          return { revisionId: candidate.id, replayed: true };
+        }
+        throw new Error("manual_brief_candidate_exists");
+      }
+      if (state.case_status !== "READY_FOR_SYNTHESIS")
+        throw new Error("manual_brief_not_authorized");
+      const claims = await client.query<{ id: string }>(
+        `SELECT id FROM claims WHERE organization_id=$1 AND case_id=$2 AND validity='CURRENT'
+         ORDER BY created_at,id`,
+        [principal.organizationId, input.caseId],
+      );
+      if (claims.rows.length === 0) throw new Error("manual_brief_claims_required");
+      const revisionId = randomUUID();
+      await client.query(
+        `INSERT INTO brief_revisions
+          (id,organization_id,case_id,brief_id,revision_number,snapshot,snapshot_hash,
+           knowledge_version,template_id,template_version,policy_version,creator,
+           created_by_user_id,reason)
+         VALUES ($1,$2,$3,$4,1,$5::jsonb,$6,$7,'discovery-brief',1,$8,'HUMAN',$9,$10)`,
+        [
+          revisionId,
+          principal.organizationId,
+          input.caseId,
+          brief.id,
+          serialized,
+          snapshotHash,
+          state.knowledge_version,
+          state.policy_version,
+          principal.userId,
+          reason,
+        ],
+      );
+      for (const [position, claim] of claims.rows.entries()) {
+        await client.query(
+          `INSERT INTO brief_revision_claims
+            (organization_id,case_id,brief_id,revision_id,claim_id,position,
+             claim_content_hash,claim_validity)
+           SELECT organization_id,case_id,$3,$4,id,$5,
+             encode(digest(content,'sha256'),'hex'),validity FROM claims
+           WHERE organization_id=$1 AND case_id=$2 AND id=$6 AND validity='CURRENT'`,
+          [principal.organizationId, input.caseId, brief.id, revisionId, position, claim.id],
+        );
+      }
+      await client.query(
+        `UPDATE prospect_cases SET status='ENGINEER_REVIEW',next_action='REVIEW_BRIEF',
+           version=version+1,updated_at=now() WHERE organization_id=$1 AND id=$2`,
+        [principal.organizationId, input.caseId],
+      );
+      await this.#audit(
+        client,
+        principal,
+        input.caseId,
+        "brief_revision.created_manually",
+        revisionId,
+        input.correlationId,
+      );
+      await client.query("COMMIT");
+      return { revisionId, replayed: false };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
+    } finally {
+      client.release();
+    }
+  }
+
   async edit(
     principal: BriefReviewPrincipal,
     input: { revisionId: string; snapshot: unknown; reason: string; correlationId: string },
