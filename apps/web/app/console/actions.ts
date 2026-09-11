@@ -2,7 +2,12 @@
 
 import { randomUUID } from "node:crypto";
 import { revalidatePath } from "next/cache";
-import { getKnowledgeStore, getOperatorStore, requireOperator } from "../../lib/operator-session";
+import {
+  getBriefSynthesisStore,
+  getKnowledgeStore,
+  getOperatorStore,
+  requireOperator,
+} from "../../lib/operator-session";
 
 function required(form: FormData, field: string): string {
   const value = form.get(field);
@@ -79,6 +84,18 @@ export async function correctClaim(form: FormData) {
       },
       correlationId: randomUUID(),
     });
+  } finally {
+    await store.close();
+  }
+  revalidatePath(`/console/casos/${caseId}`);
+}
+
+export async function requestBriefSynthesis(form: FormData) {
+  const principal = await requireOperator();
+  const caseId = required(form, "caseId");
+  const store = getBriefSynthesisStore();
+  try {
+    await store.request(principal, { caseId, correlationId: randomUUID() });
   } finally {
     await store.close();
   }

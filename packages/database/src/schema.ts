@@ -145,6 +145,24 @@ export const claimValidity = pgEnum("claim_validity", [
   "DISCARDED",
   "PENDING",
 ]);
+export const briefRevisionStatus = pgEnum("brief_revision_status", [
+  "DRAFT",
+  "IN_REVIEW",
+  "APPROVED",
+  "SUPERSEDED",
+  "WITHDRAWN",
+]);
+export const briefRevisionCreator = pgEnum("brief_revision_creator", ["HUMAN", "MODEL"]);
+export const briefSynthesisStatus = pgEnum("brief_synthesis_status", [
+  "READY",
+  "RUNNING",
+  "SUCCEEDED",
+  "INVALID",
+  "FAILED",
+  "UNCERTAIN",
+  "BUDGET_REJECTED",
+  "EXHAUSTED",
+]);
 export const claimCreator = pgEnum("claim_creator", ["HUMAN", "RULE", "MODEL"]);
 export const claimSourceRelation = pgEnum("claim_source_relation", [
   "SUPPORTS",
@@ -192,7 +210,9 @@ export const nextActionProposalStatus = pgEnum("next_action_proposal_status", [
   "AUTHORIZED",
   "REJECTED",
 ]);
-const bytea = customType<{ data: Buffer; driverData: Buffer }>({ dataType: () => "bytea" });
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+  dataType: () => "bytea",
+});
 
 export const organizations = pgTable(
   "organizations",
@@ -454,8 +474,12 @@ export const authAccounts = pgTable(
     accessToken: text("accessToken"),
     refreshToken: text("refreshToken"),
     idToken: text("idToken"),
-    accessTokenExpiresAt: timestamp("accessTokenExpiresAt", { withTimezone: true }),
-    refreshTokenExpiresAt: timestamp("refreshTokenExpiresAt", { withTimezone: true }),
+    accessTokenExpiresAt: timestamp("accessTokenExpiresAt", {
+      withTimezone: true,
+    }),
+    refreshTokenExpiresAt: timestamp("refreshTokenExpiresAt", {
+      withTimezone: true,
+    }),
     scope: text("scope"),
     password: text("password"),
     createdAt: timestamp("createdAt", { withTimezone: true }).defaultNow().notNull(),
@@ -554,7 +578,9 @@ export const messages = pgTable(
     messageType: text("message_type").notNull(),
     contentBytes: bytea("content_bytes"),
     contentHash: text("content_hash"),
-    providerOccurredAt: timestamp("provider_occurred_at", { withTimezone: true }).notNull(),
+    providerOccurredAt: timestamp("provider_occurred_at", {
+      withTimezone: true,
+    }).notNull(),
     receivedAt: timestamp("received_at", { withTimezone: true }).defaultNow().notNull(),
     processingStatus: messageProcessingStatus("processing_status").default("RECEIVED").notNull(),
     senderPersonId: uuid("sender_person_id"),
@@ -843,7 +869,9 @@ export const budgetReservations = pgTable(
     purpose: text("purpose").notNull(),
     logicalOperationKey: text("logical_operation_key").notNull(),
     attemptKey: text("attempt_key").notNull(),
-    maximumCostMicros: bigint("maximum_cost_micros", { mode: "number" }).notNull(),
+    maximumCostMicros: bigint("maximum_cost_micros", {
+      mode: "number",
+    }).notNull(),
     actualCostMicros: bigint("actual_cost_micros", { mode: "number" }),
     status: budgetReservationStatus("status").notNull(),
     createdAt,
@@ -1031,7 +1059,9 @@ export const interviews = pgTable(
     briefRequestedAt: timestamp("brief_requested_at", { withTimezone: true }),
     briefRequestMessageId: uuid("brief_request_message_id"),
     activeSeconds: bigint("active_seconds", { mode: "number" }).default(0).notNull(),
-    activeStartedAt: timestamp("active_started_at", { withTimezone: true }).defaultNow(),
+    activeStartedAt: timestamp("active_started_at", {
+      withTimezone: true,
+    }).defaultNow(),
     pausedAt: timestamp("paused_at", { withTimezone: true }),
     pauseReason: text("pause_reason"),
     resumeCaseStatus: caseStatus("resume_case_status"),
@@ -1280,7 +1310,7 @@ export const modelInvocations = pgTable(
     index("model_invocations_case_idx").on(t.organizationId, t.caseId, t.createdAt),
     check(
       "model_invocations_values_check",
-      sql`${t.purpose} in ('INTERVIEW_EXTRACT', 'NEXT_QUESTION', 'BOUNDED_RESEARCH') and length(${t.provider}) > 0 and length(${t.model}) > 0 and ${t.promptVersion} > 0 and ${t.schemaVersion} > 0 and ${t.expectedInterviewVersion} > 0 and length(${t.promptHash}) = 64 and length(${t.schemaHash}) = 64 and length(${t.contextHash}) = 64 and (${t.inputTokens} is null or ${t.inputTokens} >= 0) and (${t.outputTokens} is null or ${t.outputTokens} >= 0) and (${t.costMicros} is null or ${t.costMicros} >= 0) and (${t.latencyMs} is null or ${t.latencyMs} >= 0) and ((${t.purpose} = 'BOUNDED_RESEARCH' and ${t.interviewId} is null) or (${t.purpose} <> 'BOUNDED_RESEARCH' and ${t.interviewId} is not null))`,
+      sql`${t.purpose} in ('INTERVIEW_EXTRACT', 'NEXT_QUESTION', 'BOUNDED_RESEARCH', 'BRIEF_SYNTHESIS') and length(${t.provider}) > 0 and length(${t.model}) > 0 and ${t.promptVersion} > 0 and ${t.schemaVersion} > 0 and ${t.expectedInterviewVersion} > 0 and length(${t.promptHash}) = 64 and length(${t.schemaHash}) = 64 and length(${t.contextHash}) = 64 and (${t.inputTokens} is null or ${t.inputTokens} >= 0) and (${t.outputTokens} is null or ${t.outputTokens} >= 0) and (${t.costMicros} is null or ${t.costMicros} >= 0) and (${t.latencyMs} is null or ${t.latencyMs} >= 0) and ((${t.purpose} in ('BOUNDED_RESEARCH', 'BRIEF_SYNTHESIS') and ${t.interviewId} is null) or (${t.purpose} in ('INTERVIEW_EXTRACT', 'NEXT_QUESTION') and ${t.interviewId} is not null))`,
     ),
   ],
 );
@@ -1528,7 +1558,9 @@ export const inboxEventItems = pgTable(
     replyToProviderMessageId: text("reply_to_provider_message_id"),
     messageType: text("message_type"),
     textContent: text("text_content"),
-    providerOccurredAt: timestamp("provider_occurred_at", { withTimezone: true }).notNull(),
+    providerOccurredAt: timestamp("provider_occurred_at", {
+      withTimezone: true,
+    }).notNull(),
     receivedOrdinal: integer("received_ordinal").notNull(),
     status: inboxItemStatus("status").default("PENDING").notNull(),
     caseId: uuid("case_id"),
@@ -1566,7 +1598,9 @@ export const messageStatusObservations = pgTable("message_status_observations", 
   providerConnectionId: uuid("provider_connection_id").notNull(),
   providerMessageId: text("provider_message_id").notNull(),
   status: providerDeliveryStatus("status").notNull(),
-  providerOccurredAt: timestamp("provider_occurred_at", { withTimezone: true }).notNull(),
+  providerOccurredAt: timestamp("provider_occurred_at", {
+    withTimezone: true,
+  }).notNull(),
   inboxItemId: uuid("inbox_item_id")
     .notNull()
     .references(() => inboxEventItems.id),
@@ -1784,5 +1818,192 @@ export const consentRequests = pgTable(
     index("consent_requests_pending_idx").on(t.organizationId, t.status, t.expiresAt),
     check("consent_requests_whatsapp_only", sql`${t.channel} = 'WHATSAPP'`),
     check("consent_requests_version_positive", sql`${t.version} > 0`),
+  ],
+);
+
+export const briefs = pgTable(
+  "briefs",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id").notNull(),
+    caseId: uuid("case_id").notNull(),
+    purpose: text("purpose").default("DISCOVERY").notNull(),
+    createdAt,
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.organizationId, t.caseId],
+      foreignColumns: [prospectCases.organizationId, prospectCases.id],
+      name: "briefs_case_fk",
+    }).onDelete("restrict"),
+    unique("briefs_membership_unique").on(t.organizationId, t.caseId, t.id),
+    unique("briefs_purpose_unique").on(t.organizationId, t.caseId, t.purpose),
+    check("briefs_purpose_check", sql`${t.purpose} = 'DISCOVERY'`),
+  ],
+);
+
+export const briefRevisions = pgTable(
+  "brief_revisions",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id").notNull(),
+    caseId: uuid("case_id").notNull(),
+    briefId: uuid("brief_id").notNull(),
+    revisionNumber: integer("revision_number").notNull(),
+    baseRevisionId: uuid("base_revision_id"),
+    status: briefRevisionStatus("status").default("DRAFT").notNull(),
+    isCandidate: boolean("is_candidate").default(true).notNull(),
+    snapshot: jsonb("snapshot").notNull(),
+    snapshotHash: text("snapshot_hash").notNull(),
+    knowledgeVersion: integer("knowledge_version").notNull(),
+    templateId: text("template_id").notNull(),
+    templateVersion: integer("template_version").notNull(),
+    policyVersion: integer("policy_version").notNull(),
+    creator: briefRevisionCreator("creator").notNull(),
+    createdByUserId: text("created_by_user_id"),
+    modelInvocationId: uuid("model_invocation_id"),
+    reason: text("reason").notNull(),
+    material: boolean("material").default(true).notNull(),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.organizationId, t.caseId, t.briefId],
+      foreignColumns: [briefs.organizationId, briefs.caseId, briefs.id],
+      name: "brief_revisions_brief_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.organizationId, t.createdByUserId],
+      foreignColumns: [operatorMemberships.organizationId, operatorMemberships.userId],
+      name: "brief_revisions_operator_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.organizationId, t.caseId, t.modelInvocationId],
+      foreignColumns: [
+        modelInvocations.organizationId,
+        modelInvocations.caseId,
+        modelInvocations.id,
+      ],
+      name: "brief_revisions_invocation_fk",
+    }).onDelete("restrict"),
+    unique("brief_revisions_membership_unique").on(t.organizationId, t.caseId, t.briefId, t.id),
+    unique("brief_revisions_number_unique").on(t.organizationId, t.briefId, t.revisionNumber),
+    uniqueIndex("brief_revisions_candidate_unique")
+      .on(t.organizationId, t.briefId)
+      .where(sql`${t.isCandidate}`),
+    index("brief_revisions_case_idx").on(t.organizationId, t.caseId, t.createdAt),
+    check(
+      "brief_revisions_values_check",
+      sql`${t.revisionNumber} > 0 and ${t.knowledgeVersion} > 0
+        and ${t.templateVersion} > 0 and ${t.policyVersion} > 0
+        and jsonb_typeof(${t.snapshot}) = 'object' and length(${t.snapshotHash}) = 64
+        and ${t.snapshotHash} ~ '^[0-9a-f]{64}$'
+        and ${t.snapshotHash} = encode(digest(${t.snapshot}::text, 'sha256'), 'hex')
+        and length(${t.templateId}) > 0 and length(${t.reason}) > 0
+        and ((${t.revisionNumber} = 1 and ${t.baseRevisionId} is null)
+          or (${t.revisionNumber} > 1 and ${t.baseRevisionId} is not null))
+        and ((${t.creator} = 'HUMAN' and ${t.createdByUserId} is not null and ${t.modelInvocationId} is null)
+          or (${t.creator} = 'MODEL' and ${t.createdByUserId} is null and ${t.modelInvocationId} is not null))
+        and (not ${t.isCandidate} or ${t.status} in ('DRAFT', 'IN_REVIEW', 'APPROVED'))`,
+    ),
+  ],
+);
+
+export const briefRevisionClaims = pgTable(
+  "brief_revision_claims",
+  {
+    organizationId: uuid("organization_id").notNull(),
+    caseId: uuid("case_id").notNull(),
+    briefId: uuid("brief_id").notNull(),
+    revisionId: uuid("revision_id").notNull(),
+    claimId: uuid("claim_id").notNull(),
+    position: integer("position").notNull(),
+    claimContentHash: text("claim_content_hash").notNull(),
+    claimValidity: claimValidity("claim_validity").notNull(),
+    createdAt,
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.organizationId, t.caseId, t.briefId, t.revisionId],
+      foreignColumns: [
+        briefRevisions.organizationId,
+        briefRevisions.caseId,
+        briefRevisions.briefId,
+        briefRevisions.id,
+      ],
+      name: "brief_revision_claims_revision_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.organizationId, t.caseId, t.claimId],
+      foreignColumns: [claims.organizationId, claims.caseId, claims.id],
+      name: "brief_revision_claims_claim_fk",
+    }).onDelete("restrict"),
+    primaryKey({
+      columns: [t.organizationId, t.revisionId, t.claimId],
+      name: "brief_revision_claims_pk",
+    }),
+    unique("brief_revision_claims_position_unique").on(t.organizationId, t.revisionId, t.position),
+    check(
+      "brief_revision_claims_values_check",
+      sql`${t.position} >= 0 and length(${t.claimContentHash}) = 64
+        and ${t.claimContentHash} ~ '^[0-9a-f]{64}$'`,
+    ),
+  ],
+);
+
+export const briefSynthesisRequests = pgTable(
+  "brief_synthesis_requests",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id").notNull(),
+    caseId: uuid("case_id").notNull(),
+    briefId: uuid("brief_id").notNull(),
+    knowledgeVersion: integer("knowledge_version").notNull(),
+    status: briefSynthesisStatus("status").default("READY").notNull(),
+    attemptCount: integer("attempt_count").default(0).notNull(),
+    currentAttemptKey: text("current_attempt_key"),
+    reservationId: uuid("reservation_id"),
+    modelInvocationId: uuid("model_invocation_id"),
+    errorCode: text("error_code"),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.organizationId, t.caseId, t.briefId],
+      foreignColumns: [briefs.organizationId, briefs.caseId, briefs.id],
+      name: "brief_synthesis_requests_brief_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.organizationId, t.caseId, t.reservationId],
+      foreignColumns: [
+        budgetReservations.organizationId,
+        budgetReservations.caseId,
+        budgetReservations.id,
+      ],
+      name: "brief_synthesis_requests_reservation_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.organizationId, t.caseId, t.modelInvocationId],
+      foreignColumns: [
+        modelInvocations.organizationId,
+        modelInvocations.caseId,
+        modelInvocations.id,
+      ],
+      name: "brief_synthesis_requests_invocation_fk",
+    }).onDelete("restrict"),
+    unique("brief_synthesis_requests_logical_unique").on(
+      t.organizationId,
+      t.caseId,
+      t.knowledgeVersion,
+    ),
+    unique("brief_synthesis_requests_attempt_unique").on(t.organizationId, t.currentAttemptKey),
+    check(
+      "brief_synthesis_requests_values_check",
+      sql`${t.knowledgeVersion} > 0 and ${t.attemptCount} between 0 and 2
+        and ((${t.attemptCount} = 0 and ${t.currentAttemptKey} is null)
+          or (${t.attemptCount} > 0 and length(${t.currentAttemptKey}) > 0))`,
+    ),
   ],
 );

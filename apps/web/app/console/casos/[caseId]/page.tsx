@@ -5,7 +5,13 @@ import {
   getOperatorStore,
   requireOperator,
 } from "../../../../lib/operator-session";
-import { correctClaim, pauseCase, respondToCase, takeCase } from "../../actions";
+import {
+  correctClaim,
+  pauseCase,
+  requestBriefSynthesis,
+  respondToCase,
+  takeCase,
+} from "../../actions";
 
 export const dynamic = "force-dynamic";
 
@@ -37,6 +43,12 @@ export default async function OperatorCasePage({
           <input type="hidden" name="caseId" value={caseId} />
           <button type="submit">Pausar</button>
         </form>
+        {item.assigned && item.status === "READY_FOR_SYNTHESIS" && (
+          <form action={requestBriefSynthesis}>
+            <input type="hidden" name="caseId" value={caseId} />
+            <button type="submit">Solicitar síntesis interna</button>
+          </form>
+        )}
       </div>
       <ol className="console-messages">
         {item.messages.map((message) => (

@@ -1,5 +1,6 @@
 export * from "./attachments.js";
 export * from "./budget.js";
+export * from "./brief-synthesis.js";
 export * from "./consent.js";
 export * from "./health.js";
 export * from "./interview.js";
