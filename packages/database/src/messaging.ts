@@ -511,14 +511,16 @@ export class MessagingStore {
       await client.query("BEGIN");
       await client.query(
         `UPDATE outbox_events SET status = 'NEEDS_ACTION', last_error_code = 'deadline_expired',
-           updated_at = now() WHERE status = 'PENDING' AND deadline_at <= now()`,
+           updated_at = now() WHERE status = 'PENDING' AND event_type LIKE 'whatsapp.%'
+             AND deadline_at <= now()`,
       );
       const result = await client.query<
         OutboxMessage & { attempt_number: number; deadline_at: Date }
       >(
         `WITH candidate AS (
            SELECT id FROM outbox_events
-           WHERE status = 'PENDING' AND available_at <= now() AND deadline_at > now()
+           WHERE status = 'PENDING' AND event_type LIKE 'whatsapp.%'
+             AND available_at <= now() AND deadline_at > now()
            ORDER BY created_at FOR UPDATE SKIP LOCKED LIMIT 1
          )
          UPDATE outbox_events o SET status = 'DISPATCHING', locked_at = now(),
@@ -549,7 +551,7 @@ export class MessagingStore {
     const result = await this.#pool.query(
       `UPDATE outbox_events SET status = 'UNCERTAIN', last_error_code = 'worker_interrupted',
          locked_at = null, updated_at = now()
-       WHERE status = 'DISPATCHING' AND locked_at < $1`,
+       WHERE status = 'DISPATCHING' AND event_type LIKE 'whatsapp.%' AND locked_at < $1`,
       [lockedBefore],
     );
     return result.rowCount ?? 0;

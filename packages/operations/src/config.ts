@@ -13,10 +13,17 @@ const configSchema = z.object({
       message: "DATABASE_URL must use postgres or postgresql",
     }),
   LOG_LEVEL: logLevelSchema.default("info"),
+  EMAIL_EMITTER_ENABLED: booleanSchema.default(false),
+  EMAIL_SECRET_KEY_BASE64: z.string().min(1).optional(),
+  EMAIL_SECRET_KEY_REFERENCE: z.string().min(1).default("email-transient-v1"),
   MESSAGING_EMITTER_ENABLED: booleanSchema.default(false),
   META_ACCESS_TOKEN: z.string().min(1).optional(),
   META_GRAPH_BASE_URL: z.url().default("https://graph.facebook.com"),
   META_PHONE_NUMBER_ID: z.string().min(1).optional(),
+  RESEND_API_KEY: z.string().min(1).optional(),
+  RESEND_BASE_URL: z.url().default("https://api.resend.com"),
+  RESEND_FROM: z.string().min(1).optional(),
+  RESEND_WEBHOOK_SECRET: z.string().min(1).optional(),
   NODE_ENV: environmentSchema.default("development"),
   PORT: z.coerce.number().int().min(1).max(65_535).default(3000),
 });
@@ -30,6 +37,18 @@ export function loadConfig(source: NodeJS.ProcessEnv = process.env): AppConfig {
     (!config.META_ACCESS_TOKEN || !config.META_PHONE_NUMBER_ID)
   ) {
     throw new Error("Meta messaging configuration is required when the emitter is enabled");
+  }
+  if (
+    config.EMAIL_EMITTER_ENABLED &&
+    (!config.EMAIL_SECRET_KEY_BASE64 || !config.RESEND_API_KEY || !config.RESEND_FROM)
+  ) {
+    throw new Error("Email configuration is required when the emitter is enabled");
+  }
+  if (
+    config.EMAIL_SECRET_KEY_BASE64 &&
+    Buffer.from(config.EMAIL_SECRET_KEY_BASE64, "base64").byteLength !== 32
+  ) {
+    throw new Error("EMAIL_SECRET_KEY_BASE64 must decode to 32 bytes");
   }
   return config;
 }

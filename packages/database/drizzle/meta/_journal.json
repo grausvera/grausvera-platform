@@ -155,6 +155,62 @@
       "when": 1790736000000,
       "tag": "0021_brief_synthesis_requests",
       "breakpoints": true
+    },
+    {
+      "idx": 22,
+      "version": "7",
+      "when": 1790822400000,
+      "tag": "0022_brief_reviews_approvals",
+      "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1790908800000,
+      "tag": "0023_email_verification_challenges",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1790995200000,
+      "tag": "0024_email_verification_outbox",
+      "breakpoints": true
+    },
+    {
+      "idx": 25,
+      "version": "7",
+      "when": 1791081600000,
+      "tag": "0025_email_deliveries",
+      "breakpoints": true
+    },
+    {
+      "idx": 26,
+      "version": "7",
+      "when": 1791168000000,
+      "tag": "0026_brief_delivery_representation",
+      "breakpoints": true
+    },
+    {
+      "idx": 27,
+      "version": "7",
+      "when": 1791254400000,
+      "tag": "0027_protect_brief_delivery_representation",
+      "breakpoints": true
+    },
+    {
+      "idx": 28,
+      "version": "7",
+      "when": 1791340800000,
+      "tag": "0028_brief_confirmations",
+      "breakpoints": true
+    },
+    {
+      "idx": 29,
+      "version": "7",
+      "when": 1791427200000,
+      "tag": "0029_protect_brief_confirmations",
+      "breakpoints": true
     }
   ]
 }

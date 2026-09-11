@@ -23,6 +23,40 @@ const createdAt = timestamp("created_at", { withTimezone: true }).defaultNow().n
 const updatedAt = timestamp("updated_at", { withTimezone: true }).defaultNow().notNull();
 
 export const contactKind = pgEnum("contact_kind", ["WHATSAPP", "EMAIL"]);
+export const emailVerificationChallengeStatus = pgEnum("email_verification_challenge_status", [
+  "PENDING",
+  "CONSUMED",
+  "REVOKED",
+  "EXPIRED",
+]);
+export const emailDeliveryStatus = pgEnum("email_delivery_status", [
+  "PENDING",
+  "ACCEPTED",
+  "DELIVERED",
+  "DELAYED",
+  "BOUNCED",
+  "FAILED",
+  "COMPLAINED",
+  "UNCERTAIN",
+  "NEEDS_ACTION",
+  "CANCELLED",
+]);
+export const emailWebhookStatus = pgEnum("email_webhook_status", [
+  "RECEIVED",
+  "PROCESSED",
+  "UNMATCHED",
+  "IGNORED",
+]);
+export const confirmerDesignationStatus = pgEnum("confirmer_designation_status", [
+  "ACTIVE",
+  "REVOKED",
+]);
+export const confirmationRequestStatus = pgEnum("confirmation_request_status", [
+  "PENDING",
+  "CONSUMED",
+  "REVOKED",
+  "EXPIRED",
+]);
 export const participantRole = pgEnum("participant_role", [
   "REQUESTER",
   "REPRESENTATIVE",
@@ -153,6 +187,12 @@ export const briefRevisionStatus = pgEnum("brief_revision_status", [
   "WITHDRAWN",
 ]);
 export const briefRevisionCreator = pgEnum("brief_revision_creator", ["HUMAN", "MODEL"]);
+export const briefReviewStatus = pgEnum("brief_review_status", ["PENDING", "APPROVED", "REJECTED"]);
+export const briefApprovalStatus = pgEnum("brief_approval_status", [
+  "ACTIVE",
+  "REVOKED",
+  "EXPIRED",
+]);
 export const briefSynthesisStatus = pgEnum("brief_synthesis_status", [
   "READY",
   "RUNNING",
@@ -261,6 +301,8 @@ export const contactPoints = pgTable(
     provider: text("provider"),
     externalId: text("external_id"),
     verifiedAt: timestamp("verified_at", { withTimezone: true }),
+    deliveryBlockedAt: timestamp("delivery_blocked_at", { withTimezone: true }),
+    deliveryBlockReason: text("delivery_block_reason"),
     version,
     createdAt,
     updatedAt,
@@ -280,6 +322,11 @@ export const contactPoints = pgTable(
     check("contact_points_ciphertext_not_empty", sql`length(${t.valueCiphertext}) > 0`),
     check("contact_points_fingerprint_not_empty", sql`length(${t.fingerprint}) > 0`),
     check("contact_points_version_positive", sql`${t.version} > 0`),
+    check(
+      "contact_points_delivery_block_check",
+      sql`(${t.deliveryBlockedAt} is null and ${t.deliveryBlockReason} is null)
+        or (${t.deliveryBlockedAt} is not null and length(${t.deliveryBlockReason}) > 0)`,
+    ),
   ],
 );
 
@@ -362,6 +409,90 @@ export const caseParticipants = pgTable(
     }).onDelete("restrict"),
     uniqueIndex("case_participants_role_unique").on(t.organizationId, t.caseId, t.personId, t.role),
     check("case_participants_version_positive", sql`${t.version} > 0`),
+  ],
+);
+
+export const emailVerificationChallenges = pgTable(
+  "email_verification_challenges",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id").notNull(),
+    caseId: uuid("case_id").notNull(),
+    contactPointId: uuid("contact_point_id").notNull(),
+    purpose: text("purpose").default("BRIEF_DELIVERY").notNull(),
+    tokenDigest: text("token_digest").notNull(),
+    status: emailVerificationChallengeStatus("status").default("PENDING").notNull(),
+    attemptCount: integer("attempt_count").default(0).notNull(),
+    maxAttempts: integer("max_attempts").default(5).notNull(),
+    previousChallengeId: uuid("previous_challenge_id"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.organizationId, t.caseId],
+      foreignColumns: [prospectCases.organizationId, prospectCases.id],
+      name: "email_verification_challenges_case_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.organizationId, t.contactPointId],
+      foreignColumns: [contactPoints.organizationId, contactPoints.id],
+      name: "email_verification_challenges_contact_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.previousChallengeId],
+      foreignColumns: [t.id],
+      name: "email_verification_challenges_previous_fk",
+    }).onDelete("restrict"),
+    unique("email_verification_challenges_digest_unique").on(t.organizationId, t.tokenDigest),
+    uniqueIndex("email_verification_challenges_pending_unique")
+      .on(t.organizationId, t.caseId, t.contactPointId, t.purpose)
+      .where(sql`${t.status} = 'PENDING'`),
+    index("email_verification_challenges_expiry_idx").on(t.organizationId, t.status, t.expiresAt),
+    check(
+      "email_verification_challenges_values_check",
+      sql`${t.purpose} = 'BRIEF_DELIVERY'
+        and length(${t.tokenDigest}) = 64 and ${t.tokenDigest} ~ '^[0-9a-f]{64}$'
+        and ${t.attemptCount} between 0 and ${t.maxAttempts}
+        and ${t.maxAttempts} between 1 and 10
+        and ${t.expiresAt} > ${t.createdAt}
+        and ((${t.status} = 'PENDING' and ${t.consumedAt} is null and ${t.revokedAt} is null)
+          or (${t.status} = 'CONSUMED' and ${t.consumedAt} is not null and ${t.revokedAt} is null)
+          or (${t.status} in ('REVOKED','EXPIRED') and ${t.consumedAt} is null
+            and ${t.revokedAt} is not null))`,
+    ),
+  ],
+);
+
+export const emailVerificationOutboxSecrets = pgTable(
+  "email_verification_outbox_secrets",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    challengeId: uuid("challenge_id")
+      .notNull()
+      .references(() => emailVerificationChallenges.id, { onDelete: "restrict" }),
+    ciphertext: bytea("ciphertext"),
+    initializationVector: bytea("initialization_vector"),
+    authenticationTag: bytea("authentication_tag"),
+    keyReference: text("key_reference").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    destroyedAt: timestamp("destroyed_at", { withTimezone: true }),
+    createdAt,
+  },
+  (t) => [
+    unique("email_verification_outbox_secrets_challenge_unique").on(t.challengeId),
+    check(
+      "email_verification_outbox_secrets_lifecycle_check",
+      sql`((${t.destroyedAt} is null and ${t.ciphertext} is not null
+          and octet_length(${t.initializationVector}) = 12
+          and octet_length(${t.authenticationTag}) = 16)
+        or (${t.destroyedAt} is not null and ${t.ciphertext} is null
+          and ${t.initializationVector} is null and ${t.authenticationTag} is null))
+        and length(${t.keyReference}) > 0 and ${t.expiresAt} > ${t.createdAt}`,
+    ),
   ],
 );
 
@@ -1948,6 +2079,422 @@ export const briefRevisionClaims = pgTable(
       "brief_revision_claims_values_check",
       sql`${t.position} >= 0 and length(${t.claimContentHash}) = 64
         and ${t.claimContentHash} ~ '^[0-9a-f]{64}$'`,
+    ),
+  ],
+);
+
+export const briefReviews = pgTable(
+  "brief_reviews",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id").notNull(),
+    caseId: uuid("case_id").notNull(),
+    briefId: uuid("brief_id").notNull(),
+    revisionId: uuid("revision_id").notNull(),
+    reviewerUserId: text("reviewer_user_id").notNull(),
+    status: briefReviewStatus("status").default("PENDING").notNull(),
+    comments: text("comments"),
+    submittedAt: timestamp("submitted_at", { withTimezone: true }).defaultNow().notNull(),
+    decidedAt: timestamp("decided_at", { withTimezone: true }),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.organizationId, t.caseId, t.briefId, t.revisionId],
+      foreignColumns: [
+        briefRevisions.organizationId,
+        briefRevisions.caseId,
+        briefRevisions.briefId,
+        briefRevisions.id,
+      ],
+      name: "brief_reviews_revision_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.organizationId, t.reviewerUserId],
+      foreignColumns: [operatorMemberships.organizationId, operatorMemberships.userId],
+      name: "brief_reviews_reviewer_fk",
+    }).onDelete("restrict"),
+    unique("brief_reviews_membership_unique").on(
+      t.organizationId,
+      t.caseId,
+      t.briefId,
+      t.revisionId,
+      t.id,
+    ),
+    unique("brief_reviews_revision_unique").on(t.organizationId, t.revisionId),
+    index("brief_reviews_queue_idx").on(
+      t.organizationId,
+      t.reviewerUserId,
+      t.status,
+      t.submittedAt,
+    ),
+    check(
+      "brief_reviews_decision_check",
+      sql`((${t.status} = 'PENDING' and ${t.decidedAt} is null)
+        or (${t.status} in ('APPROVED', 'REJECTED') and ${t.decidedAt} is not null))
+        and (${t.comments} is null or length(btrim(${t.comments})) > 0)`,
+    ),
+  ],
+);
+
+export const briefApprovals = pgTable(
+  "brief_approvals",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id").notNull(),
+    caseId: uuid("case_id").notNull(),
+    briefId: uuid("brief_id").notNull(),
+    revisionId: uuid("revision_id").notNull(),
+    reviewId: uuid("review_id").notNull(),
+    snapshotHash: text("snapshot_hash").notNull(),
+    approvedByUserId: text("approved_by_user_id").notNull(),
+    deliveryPurpose: text("delivery_purpose").default("BRIEF_DELIVERY").notNull(),
+    authenticationMethod: text("authentication_method").notNull(),
+    authenticatedAt: timestamp("authenticated_at", { withTimezone: true }).notNull(),
+    status: briefApprovalStatus("status").default("ACTIVE").notNull(),
+    approvedAt: timestamp("approved_at", { withTimezone: true }).defaultNow().notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    expiresAt: timestamp("expires_at", { withTimezone: true }),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.organizationId, t.caseId, t.briefId, t.revisionId, t.reviewId],
+      foreignColumns: [
+        briefReviews.organizationId,
+        briefReviews.caseId,
+        briefReviews.briefId,
+        briefReviews.revisionId,
+        briefReviews.id,
+      ],
+      name: "brief_approvals_review_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.organizationId, t.approvedByUserId],
+      foreignColumns: [operatorMemberships.organizationId, operatorMemberships.userId],
+      name: "brief_approvals_operator_fk",
+    }).onDelete("restrict"),
+    unique("brief_approvals_membership_unique").on(
+      t.organizationId,
+      t.caseId,
+      t.briefId,
+      t.revisionId,
+      t.id,
+    ),
+    uniqueIndex("brief_approvals_active_unique")
+      .on(t.organizationId, t.revisionId, t.deliveryPurpose)
+      .where(sql`${t.status} = 'ACTIVE'`),
+    index("brief_approvals_case_idx").on(t.organizationId, t.caseId, t.status, t.approvedAt),
+    check(
+      "brief_approvals_values_check",
+      sql`length(${t.snapshotHash}) = 64 and ${t.snapshotHash} ~ '^[0-9a-f]{64}$'
+        and ${t.deliveryPurpose} = 'BRIEF_DELIVERY'
+        and ${t.authenticationMethod} = 'PASSWORD_TOTP'
+        and ${t.authenticatedAt} <= ${t.approvedAt}
+        and (${t.expiresAt} is null or ${t.expiresAt} > ${t.approvedAt})
+        and ((${t.status} = 'ACTIVE' and ${t.revokedAt} is null)
+          or (${t.status} in ('REVOKED', 'EXPIRED') and ${t.revokedAt} is not null))`,
+    ),
+  ],
+);
+
+export const emailDeliveries = pgTable(
+  "email_deliveries",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id").notNull(),
+    caseId: uuid("case_id").notNull(),
+    briefId: uuid("brief_id").notNull(),
+    revisionId: uuid("revision_id").notNull(),
+    approvalId: uuid("approval_id").notNull(),
+    contactPointId: uuid("contact_point_id").notNull(),
+    outboxEventId: uuid("outbox_event_id").notNull(),
+    purpose: text("purpose").default("BRIEF_DELIVERY").notNull(),
+    status: emailDeliveryStatus("status").default("PENDING").notNull(),
+    providerExternalId: text("provider_external_id"),
+    firstAttemptAt: timestamp("first_attempt_at", { withTimezone: true }),
+    deduplicationExpiresAt: timestamp("deduplication_expires_at", { withTimezone: true }).notNull(),
+    deadlineAt: timestamp("deadline_at", { withTimezone: true }).notNull(),
+    lastProviderOccurredAt: timestamp("last_provider_occurred_at", { withTimezone: true }),
+    failureCode: text("failure_code"),
+    representationObjectKey: text("representation_object_key"),
+    representationHash: text("representation_hash"),
+    representationContentType: text("representation_content_type"),
+    representationByteSize: integer("representation_byte_size"),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.organizationId, t.caseId, t.briefId, t.revisionId, t.approvalId],
+      foreignColumns: [
+        briefApprovals.organizationId,
+        briefApprovals.caseId,
+        briefApprovals.briefId,
+        briefApprovals.revisionId,
+        briefApprovals.id,
+      ],
+      name: "email_deliveries_approval_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.organizationId, t.contactPointId],
+      foreignColumns: [contactPoints.organizationId, contactPoints.id],
+      name: "email_deliveries_contact_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.outboxEventId],
+      foreignColumns: [outboxEvents.id],
+      name: "email_deliveries_outbox_fk",
+    }).onDelete("restrict"),
+    unique("email_deliveries_membership_unique").on(t.organizationId, t.caseId, t.id),
+    unique("email_deliveries_outbox_unique").on(t.outboxEventId),
+    uniqueIndex("email_deliveries_provider_external_unique")
+      .on(t.providerExternalId)
+      .where(sql`${t.providerExternalId} is not null`),
+    index("email_deliveries_reconciliation_idx").on(
+      t.status,
+      t.deduplicationExpiresAt,
+      t.updatedAt,
+    ),
+    check(
+      "email_deliveries_values_check",
+      sql`${t.purpose} = 'BRIEF_DELIVERY'
+        and ${t.deadlineAt} <= ${t.deduplicationExpiresAt}
+        and ${t.deduplicationExpiresAt} > ${t.createdAt}
+        and (${t.firstAttemptAt} is null or ${t.firstAttemptAt} >= ${t.createdAt})
+        and ((${t.representationObjectKey} is null and ${t.representationHash} is null
+          and ${t.representationContentType} is null and ${t.representationByteSize} is null)
+          or (length(${t.representationObjectKey}) > 0 and length(${t.representationHash}) = 64
+            and ${t.representationHash} ~ '^[0-9a-f]{64}$'
+            and ${t.representationContentType} = 'application/json'
+            and ${t.representationByteSize} > 0))`,
+    ),
+  ],
+);
+
+export const emailDeliveryOutboxSecrets = pgTable(
+  "email_delivery_outbox_secrets",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    deliveryId: uuid("delivery_id")
+      .notNull()
+      .references(() => emailDeliveries.id, { onDelete: "restrict" }),
+    ciphertext: bytea("ciphertext"),
+    initializationVector: bytea("initialization_vector"),
+    authenticationTag: bytea("authentication_tag"),
+    keyReference: text("key_reference").notNull(),
+    destroyedAt: timestamp("destroyed_at", { withTimezone: true }),
+    createdAt,
+  },
+  (t) => [
+    unique("email_delivery_outbox_secrets_delivery_unique").on(t.deliveryId),
+    check(
+      "email_delivery_outbox_secrets_lifecycle_check",
+      sql`((${t.destroyedAt} is null and ${t.ciphertext} is not null
+          and octet_length(${t.initializationVector}) = 12
+          and octet_length(${t.authenticationTag}) = 16)
+        or (${t.destroyedAt} is not null and ${t.ciphertext} is null
+          and ${t.initializationVector} is null and ${t.authenticationTag} is null))
+        and length(${t.keyReference}) > 0`,
+    ),
+  ],
+);
+
+export const emailDeliveryAttempts = pgTable(
+  "email_delivery_attempts",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    deliveryId: uuid("delivery_id")
+      .notNull()
+      .references(() => emailDeliveries.id, { onDelete: "restrict" }),
+    attemptNumber: integer("attempt_number").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    startedAt: timestamp("started_at", { withTimezone: true }).defaultNow().notNull(),
+    completedAt: timestamp("completed_at", { withTimezone: true }),
+    outcome: deliveryAttemptOutcome("outcome"),
+    providerExternalId: text("provider_external_id"),
+    errorCode: text("error_code"),
+  },
+  (t) => [
+    unique("email_delivery_attempts_number_unique").on(t.deliveryId, t.attemptNumber),
+    check(
+      "email_delivery_attempts_values_check",
+      sql`${t.attemptNumber} > 0 and length(${t.idempotencyKey}) > 0
+        and ((${t.completedAt} is null and ${t.outcome} is null)
+          or (${t.completedAt} is not null and ${t.outcome} is not null))`,
+    ),
+  ],
+);
+
+export const emailWebhookEvents = pgTable(
+  "email_webhook_events",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    externalEventId: text("external_event_id").notNull(),
+    eventType: text("event_type").notNull(),
+    providerEmailId: text("provider_email_id"),
+    providerOccurredAt: timestamp("provider_occurred_at", { withTimezone: true }).notNull(),
+    payloadBytes: bytea("payload_bytes").notNull(),
+    payloadHash: text("payload_hash").notNull(),
+    status: emailWebhookStatus("status").default("RECEIVED").notNull(),
+    deliveryId: uuid("delivery_id").references(() => emailDeliveries.id, { onDelete: "restrict" }),
+    receivedAt: timestamp("received_at", { withTimezone: true }).defaultNow().notNull(),
+    processedAt: timestamp("processed_at", { withTimezone: true }),
+  },
+  (t) => [
+    unique("email_webhook_events_external_unique").on(t.externalEventId),
+    index("email_webhook_events_pending_idx").on(t.status, t.receivedAt),
+    check(
+      "email_webhook_events_values_check",
+      sql`length(${t.eventType}) > 0 and length(${t.payloadHash}) = 64
+        and ${t.payloadHash} ~ '^[0-9a-f]{64}$'
+        and ((${t.status} in ('RECEIVED','UNMATCHED') and ${t.processedAt} is null)
+          or (${t.status} in ('PROCESSED','IGNORED') and ${t.processedAt} is not null))`,
+    ),
+  ],
+);
+
+export const emailDeliveryObservations = pgTable(
+  "email_delivery_observations",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    deliveryId: uuid("delivery_id")
+      .notNull()
+      .references(() => emailDeliveries.id, { onDelete: "restrict" }),
+    webhookEventId: uuid("webhook_event_id")
+      .notNull()
+      .references(() => emailWebhookEvents.id, { onDelete: "restrict" }),
+    status: emailDeliveryStatus("status").notNull(),
+    providerOccurredAt: timestamp("provider_occurred_at", { withTimezone: true }).notNull(),
+    createdAt,
+  },
+  (t) => [unique("email_delivery_observations_webhook_unique").on(t.webhookEventId)],
+);
+
+export const caseConfirmerDesignations = pgTable(
+  "case_confirmer_designations",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id").notNull(),
+    caseId: uuid("case_id").notNull(),
+    participantId: uuid("participant_id")
+      .notNull()
+      .references(() => caseParticipants.id, { onDelete: "restrict" }),
+    personId: uuid("person_id").notNull(),
+    contactPointId: uuid("contact_point_id").notNull(),
+    designatedByUserId: text("designated_by_user_id").notNull(),
+    reason: text("reason").notNull(),
+    status: confirmerDesignationStatus("status").default("ACTIVE").notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt,
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.organizationId, t.caseId],
+      foreignColumns: [prospectCases.organizationId, prospectCases.id],
+      name: "case_confirmer_designations_case_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.organizationId, t.personId, t.contactPointId],
+      foreignColumns: [contactPoints.organizationId, contactPoints.personId, contactPoints.id],
+      name: "case_confirmer_designations_contact_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.organizationId, t.designatedByUserId],
+      foreignColumns: [operatorMemberships.organizationId, operatorMemberships.userId],
+      name: "case_confirmer_designations_operator_fk",
+    }).onDelete("restrict"),
+    uniqueIndex("case_confirmer_designations_active_unique")
+      .on(t.organizationId, t.caseId)
+      .where(sql`${t.status} = 'ACTIVE'`),
+    check(
+      "case_confirmer_designations_values_check",
+      sql`length(btrim(${t.reason})) > 0 and ((${t.status} = 'ACTIVE' and ${t.revokedAt} is null) or (${t.status} = 'REVOKED' and ${t.revokedAt} is not null))`,
+    ),
+  ],
+);
+
+export const confirmationRequests = pgTable(
+  "confirmation_requests",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id").notNull(),
+    caseId: uuid("case_id").notNull(),
+    designationId: uuid("designation_id")
+      .notNull()
+      .references(() => caseConfirmerDesignations.id, { onDelete: "restrict" }),
+    participantId: uuid("participant_id").notNull(),
+    personId: uuid("person_id").notNull(),
+    contactPointId: uuid("contact_point_id").notNull(),
+    approvalId: uuid("approval_id").notNull(),
+    revisionId: uuid("revision_id").notNull(),
+    deliveryId: uuid("delivery_id")
+      .notNull()
+      .references(() => emailDeliveries.id, { onDelete: "restrict" }),
+    requestMessageId: uuid("request_message_id").notNull(),
+    outboxEventId: uuid("outbox_event_id")
+      .notNull()
+      .references(() => outboxEvents.id, { onDelete: "restrict" }),
+    purpose: text("purpose").default("NEED_AND_CONTINUE").notNull(),
+    templateId: text("template_id").default("brief-confirmation").notNull(),
+    templateVersion: integer("template_version").default(1).notNull(),
+    status: confirmationRequestStatus("status").default("PENDING").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    unique("confirmation_requests_outbox_unique").on(t.outboxEventId),
+    unique("confirmation_requests_message_unique").on(t.requestMessageId),
+    uniqueIndex("confirmation_requests_pending_unique")
+      .on(t.organizationId, t.caseId)
+      .where(sql`${t.status} = 'PENDING'`),
+    check(
+      "confirmation_requests_values_check",
+      sql`${t.purpose} = 'NEED_AND_CONTINUE' and ${t.templateId} = 'brief-confirmation'
+        and ${t.templateVersion} = 1 and ${t.expiresAt} > ${t.createdAt}
+        and ((${t.status} = 'PENDING' and ${t.consumedAt} is null and ${t.revokedAt} is null)
+          or (${t.status} = 'CONSUMED' and ${t.consumedAt} is not null and ${t.revokedAt} is null)
+          or (${t.status} in ('REVOKED','EXPIRED') and ${t.consumedAt} is null
+            and ${t.revokedAt} is not null))`,
+    ),
+  ],
+);
+
+export const confirmations = pgTable(
+  "confirmations",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id").notNull(),
+    caseId: uuid("case_id").notNull(),
+    requestId: uuid("request_id")
+      .notNull()
+      .references(() => confirmationRequests.id, { onDelete: "restrict" }),
+    participantId: uuid("participant_id").notNull(),
+    personId: uuid("person_id").notNull(),
+    contactPointId: uuid("contact_point_id").notNull(),
+    revisionId: uuid("revision_id").notNull(),
+    deliveryId: uuid("delivery_id")
+      .notNull()
+      .references(() => emailDeliveries.id, { onDelete: "restrict" }),
+    sourceMessageId: uuid("source_message_id").notNull(),
+    purpose: text("purpose").default("NEED_AND_CONTINUE").notNull(),
+    normalizedAction: text("normalized_action").default("CONFIRMO").notNull(),
+    idempotencyKey: text("idempotency_key").notNull(),
+    occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
+    createdAt,
+  },
+  (t) => [
+    unique("confirmations_request_unique").on(t.requestId),
+    unique("confirmations_source_message_unique").on(t.sourceMessageId),
+    unique("confirmations_idempotency_unique").on(t.organizationId, t.idempotencyKey),
+    check(
+      "confirmations_values_check",
+      sql`${t.purpose} = 'NEED_AND_CONTINUE' and ${t.normalizedAction} = 'CONFIRMO'`,
     ),
   ],
 );

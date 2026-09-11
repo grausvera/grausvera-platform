@@ -7,6 +7,7 @@ import {
   type OperatorPrincipal,
 } from "../../packages/database/src";
 import { getAuth } from "../../apps/web/lib/auth";
+import { hardenOperatorSecurityChange } from "../../apps/web/app/api/auth/[...all]/route";
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) throw new Error("DATABASE_URL is required for security tests");
@@ -214,5 +215,29 @@ describe("operator console authorization", () => {
       authorized_operator_user_id: userId,
       response_audits: 1,
     });
+  });
+
+  it("revokes incompatible sessions after recovery or a TOTP reset", async () => {
+    const currentId = `session-${randomUUID()}`;
+    const otherId = `session-${randomUUID()}`;
+    await pool.query(
+      `INSERT INTO "session" (id,"expiresAt",token,"updatedAt","userId")
+       VALUES ($1,now()+interval '1 hour',$2,now(),$3),
+              ($4,now()+interval '1 hour',$5,now(),$3)`,
+      [currentId, randomUUID(), userId, otherId, randomUUID()],
+    );
+    await hardenOperatorSecurityChange(userId, currentId, "authentication.recovered");
+    await expect(
+      pool.query(`SELECT id FROM "session" WHERE "userId"=$1`, [userId]).then((r) => r.rows),
+    ).resolves.toEqual([{ id: currentId }]);
+    await hardenOperatorSecurityChange(userId, null, "authentication.totp_reset");
+    const state = await pool.query(
+      `SELECT
+       (SELECT count(*)::integer FROM "session" WHERE "userId"=$1) sessions,
+       (SELECT count(*)::integer FROM audit_events WHERE actor=$2
+         AND action IN ('authentication.recovered','authentication.totp_reset')) audits`,
+      [userId, `operator:${userId}`],
+    );
+    expect(state.rows[0]).toEqual({ sessions: 0, audits: 2 });
   });
 });

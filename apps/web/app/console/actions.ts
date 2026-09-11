@@ -4,9 +4,11 @@ import { randomUUID } from "node:crypto";
 import { revalidatePath } from "next/cache";
 import {
   getBriefSynthesisStore,
+  getBriefReviewStore,
   getKnowledgeStore,
   getOperatorStore,
   requireOperator,
+  requireRecentOperator,
 } from "../../lib/operator-session";
 
 function required(form: FormData, field: string): string {
@@ -100,4 +102,77 @@ export async function requestBriefSynthesis(form: FormData) {
     await store.close();
   }
   revalidatePath(`/console/casos/${caseId}`);
+}
+
+export async function editBriefRevision(form: FormData) {
+  const principal = await requireOperator();
+  const revisionId = required(form, "revisionId");
+  let snapshot: unknown;
+  try {
+    snapshot = JSON.parse(required(form, "snapshot"));
+  } catch {
+    throw new Error("brief_snapshot_invalid");
+  }
+  const store = getBriefReviewStore();
+  try {
+    const edited = await store.edit(principal, {
+      revisionId,
+      snapshot,
+      reason: required(form, "reason"),
+      correlationId: randomUUID(),
+    });
+    revalidatePath(`/console/revisiones/${revisionId}`);
+    revalidatePath(`/console/revisiones/${edited.revisionId}`);
+    revalidatePath("/console");
+  } finally {
+    await store.close();
+  }
+}
+
+export async function submitBriefRevision(form: FormData) {
+  const principal = await requireOperator();
+  const revisionId = required(form, "revisionId");
+  const store = getBriefReviewStore();
+  try {
+    await store.submit(principal, { revisionId, correlationId: randomUUID() });
+  } finally {
+    await store.close();
+  }
+  revalidatePath(`/console/revisiones/${revisionId}`);
+  revalidatePath("/console");
+}
+
+export async function rejectBriefRevision(form: FormData) {
+  const principal = await requireOperator();
+  const revisionId = required(form, "revisionId");
+  const store = getBriefReviewStore();
+  try {
+    await store.reject(principal, {
+      revisionId,
+      comments: required(form, "comments"),
+      correlationId: randomUUID(),
+    });
+  } finally {
+    await store.close();
+  }
+  revalidatePath(`/console/revisiones/${revisionId}`);
+  revalidatePath("/console");
+}
+
+export async function approveBriefRevision(form: FormData) {
+  const principal = await requireRecentOperator();
+  const revisionId = required(form, "revisionId");
+  const comments = form.get("comments");
+  const store = getBriefReviewStore();
+  try {
+    await store.approve(principal, {
+      revisionId,
+      comments: typeof comments === "string" ? comments : undefined,
+      correlationId: randomUUID(),
+    });
+  } finally {
+    await store.close();
+  }
+  revalidatePath(`/console/revisiones/${revisionId}`);
+  revalidatePath("/console");
 }
