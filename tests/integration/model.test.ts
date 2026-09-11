@@ -45,8 +45,8 @@ beforeAll(async () => {
   policyId = await pool
     .query<{ id: string }>(
       `WITH inserted AS (
-         INSERT INTO interview_policies (organization_id, version, topics)
-         VALUES ($1, 250, '[{"key":"PROJECT_INTENT","required":true}]')
+         INSERT INTO interview_policies (organization_id, version, topics, effective_at)
+         VALUES ($1, 250, '[{"key":"PROJECT_INTENT","required":true}]', now() + interval '1 day')
          ON CONFLICT (organization_id, version) DO NOTHING RETURNING id
        )
        SELECT id FROM inserted
