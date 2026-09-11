@@ -162,6 +162,20 @@
       "when": 1790822400000,
       "tag": "0022_brief_reviews_approvals",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1790908800000,
+      "tag": "0023_email_verification_challenges",
+      "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1790995200000,
+      "tag": "0024_email_verification_outbox",
+      "breakpoints": true
     }
   ]
 }

@@ -23,6 +23,12 @@ const createdAt = timestamp("created_at", { withTimezone: true }).defaultNow().n
 const updatedAt = timestamp("updated_at", { withTimezone: true }).defaultNow().notNull();
 
 export const contactKind = pgEnum("contact_kind", ["WHATSAPP", "EMAIL"]);
+export const emailVerificationChallengeStatus = pgEnum("email_verification_challenge_status", [
+  "PENDING",
+  "CONSUMED",
+  "REVOKED",
+  "EXPIRED",
+]);
 export const participantRole = pgEnum("participant_role", [
   "REQUESTER",
   "REPRESENTATIVE",
@@ -368,6 +374,90 @@ export const caseParticipants = pgTable(
     }).onDelete("restrict"),
     uniqueIndex("case_participants_role_unique").on(t.organizationId, t.caseId, t.personId, t.role),
     check("case_participants_version_positive", sql`${t.version} > 0`),
+  ],
+);
+
+export const emailVerificationChallenges = pgTable(
+  "email_verification_challenges",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    organizationId: uuid("organization_id").notNull(),
+    caseId: uuid("case_id").notNull(),
+    contactPointId: uuid("contact_point_id").notNull(),
+    purpose: text("purpose").default("BRIEF_DELIVERY").notNull(),
+    tokenDigest: text("token_digest").notNull(),
+    status: emailVerificationChallengeStatus("status").default("PENDING").notNull(),
+    attemptCount: integer("attempt_count").default(0).notNull(),
+    maxAttempts: integer("max_attempts").default(5).notNull(),
+    previousChallengeId: uuid("previous_challenge_id"),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    consumedAt: timestamp("consumed_at", { withTimezone: true }),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    createdAt,
+    updatedAt,
+  },
+  (t) => [
+    foreignKey({
+      columns: [t.organizationId, t.caseId],
+      foreignColumns: [prospectCases.organizationId, prospectCases.id],
+      name: "email_verification_challenges_case_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.organizationId, t.contactPointId],
+      foreignColumns: [contactPoints.organizationId, contactPoints.id],
+      name: "email_verification_challenges_contact_fk",
+    }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.previousChallengeId],
+      foreignColumns: [t.id],
+      name: "email_verification_challenges_previous_fk",
+    }).onDelete("restrict"),
+    unique("email_verification_challenges_digest_unique").on(t.organizationId, t.tokenDigest),
+    uniqueIndex("email_verification_challenges_pending_unique")
+      .on(t.organizationId, t.caseId, t.contactPointId, t.purpose)
+      .where(sql`${t.status} = 'PENDING'`),
+    index("email_verification_challenges_expiry_idx").on(t.organizationId, t.status, t.expiresAt),
+    check(
+      "email_verification_challenges_values_check",
+      sql`${t.purpose} = 'BRIEF_DELIVERY'
+        and length(${t.tokenDigest}) = 64 and ${t.tokenDigest} ~ '^[0-9a-f]{64}$'
+        and ${t.attemptCount} between 0 and ${t.maxAttempts}
+        and ${t.maxAttempts} between 1 and 10
+        and ${t.expiresAt} > ${t.createdAt}
+        and ((${t.status} = 'PENDING' and ${t.consumedAt} is null and ${t.revokedAt} is null)
+          or (${t.status} = 'CONSUMED' and ${t.consumedAt} is not null and ${t.revokedAt} is null)
+          or (${t.status} in ('REVOKED','EXPIRED') and ${t.consumedAt} is null
+            and ${t.revokedAt} is not null))`,
+    ),
+  ],
+);
+
+export const emailVerificationOutboxSecrets = pgTable(
+  "email_verification_outbox_secrets",
+  {
+    id: uuid("id").defaultRandom().primaryKey(),
+    challengeId: uuid("challenge_id")
+      .notNull()
+      .references(() => emailVerificationChallenges.id, { onDelete: "restrict" }),
+    ciphertext: bytea("ciphertext"),
+    initializationVector: bytea("initialization_vector"),
+    authenticationTag: bytea("authentication_tag"),
+    keyReference: text("key_reference").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    destroyedAt: timestamp("destroyed_at", { withTimezone: true }),
+    createdAt,
+  },
+  (t) => [
+    unique("email_verification_outbox_secrets_challenge_unique").on(t.challengeId),
+    check(
+      "email_verification_outbox_secrets_lifecycle_check",
+      sql`((${t.destroyedAt} is null and ${t.ciphertext} is not null
+          and octet_length(${t.initializationVector}) = 12
+          and octet_length(${t.authenticationTag}) = 16)
+        or (${t.destroyedAt} is not null and ${t.ciphertext} is null
+          and ${t.initializationVector} is null and ${t.authenticationTag} is null))
+        and length(${t.keyReference}) > 0 and ${t.expiresAt} > ${t.createdAt}`,
+    ),
   ],
 );
 
