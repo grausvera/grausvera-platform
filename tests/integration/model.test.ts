@@ -578,6 +578,206 @@ describe("reserved structured model extraction", () => {
     expect(state.rows[0]).toEqual({ status: "REJECTED", pending_question: null, outbox: 0 });
   });
 
+  it("blocks readiness until the prospect explicitly requests the brief", async () => {
+    const current = await caseWithMessage("Quiero recibir el resumen del proyecto");
+    await pool.query(
+      `UPDATE interview_topics SET status = 'CAPTURED'
+       WHERE organization_id = $1 AND case_id = $2`,
+      [organizationId, current.caseId],
+    );
+    const materialContext = await invocations.buildExtractionContext({
+      organizationId,
+      caseId: current.caseId,
+      messageIds: [current.messageId],
+      purpose: "NEXT_QUESTION",
+    });
+    expect(materialContext.context.sufficiency).toEqual({
+      sufficient: false,
+      missing: ["BRIEF_REQUEST"],
+    });
+    const ask = await nextRunner([
+      {
+        kind: "completed",
+        responseId: "resp-ask-for-brief-request",
+        output: {
+          action: "ASK",
+          question: "¿Quieres que prepare el resumen del proyecto?",
+          reasonCode: "BRIEF_REQUEST_REQUIRED",
+          targetTopic: "BRIEF_REQUEST",
+          referencedClaimIds: [],
+        },
+        inputTokens: 2,
+        outputTokens: 4,
+        latencyMs: 1,
+      },
+    ]).run(runInput(current.caseId, current.messageId));
+    const asked = await nextActions.authorize({
+      organizationId,
+      proposalId: ask.kind === "proposal" ? ask.proposalId : randomUUID(),
+      correlationId: randomUUID(),
+    });
+    expect(asked).toMatchObject({ kind: "authorized", action: "ASK" });
+    if (asked.kind !== "authorized") throw new Error("material_question_not_authorized");
+    await pool.query(`UPDATE outbox_events SET status = 'CANCELLED' WHERE id = $1`, [
+      asked.outboxEventId,
+    ]);
+    const readyOutput = {
+      kind: "completed" as const,
+      responseId: "resp-ready-without-request",
+      output: {
+        action: "READY" as const,
+        reasonCode: "MATERIAL_INFORMATION_COMPLETE",
+        referencedClaimIds: [],
+      },
+      inputTokens: 2,
+      outputTokens: 3,
+      latencyMs: 1,
+    };
+    const first = await nextRunner([readyOutput]).run(runInput(current.caseId, current.messageId));
+    expect(first).toMatchObject({ kind: "invalid" });
+
+    await pool.query(
+      `UPDATE interviews SET brief_requested_at = now(), brief_request_message_id = $3
+       WHERE organization_id = $1 AND case_id = $2`,
+      [organizationId, current.caseId, current.messageId],
+    );
+    const second = await nextRunner([
+      { ...readyOutput, responseId: "resp-ready-with-request" },
+    ]).run(runInput(current.caseId, current.messageId));
+    await expect(
+      nextActions.authorize({
+        organizationId,
+        proposalId: second.kind === "proposal" ? second.proposalId : randomUUID(),
+        correlationId: randomUUID(),
+      }),
+    ).resolves.toMatchObject({ kind: "authorized", action: "READY" });
+  });
+
+  it("escalates after two unresolved questions for the same material target", async () => {
+    const current = await caseWithMessage();
+    for (const [index, question] of [
+      "¿Cuál es la intención principal del proyecto?",
+      "¿Cómo describirías el propósito principal del proyecto?",
+      "¿Qué necesidad principal debe resolver el proyecto?",
+    ].entries()) {
+      const result = await nextRunner([
+        {
+          kind: "completed",
+          responseId: `resp-material-loop-${index}`,
+          output: {
+            action: "ASK",
+            question,
+            reasonCode: "MISSING_REQUIRED_TOPIC",
+            targetTopic: "PROJECT_INTENT",
+            referencedClaimIds: [],
+          },
+          inputTokens: 2,
+          outputTokens: 4,
+          latencyMs: 1,
+        },
+      ]).run(runInput(current.caseId, current.messageId));
+      const authorization = await nextActions.authorize({
+        organizationId,
+        proposalId: result.kind === "proposal" ? result.proposalId : randomUUID(),
+        correlationId: randomUUID(),
+      });
+      if (index < 2) {
+        expect(authorization).toMatchObject({ kind: "authorized", action: "ASK" });
+        await pool.query(
+          `UPDATE interviews SET pending_question = NULL
+           WHERE organization_id = $1 AND case_id = $2`,
+          [organizationId, current.caseId],
+        );
+      } else {
+        expect(authorization).toEqual({
+          kind: "blocked",
+          action: "ASK",
+          reason: "MATERIAL_QUESTION_LIMIT_REACHED",
+        });
+      }
+    }
+    const state = await pool.query(
+      `SELECT pc.status, pc.next_action, i.pause_reason,
+        (SELECT count(*)::integer FROM messages
+         WHERE organization_id = pc.organization_id AND case_id = pc.id
+           AND direction = 'OUTBOUND') AS outbound
+       FROM prospect_cases pc JOIN interviews i
+         ON i.organization_id = pc.organization_id AND i.case_id = pc.id
+       WHERE pc.organization_id = $1 AND pc.id = $2`,
+      [organizationId, current.caseId],
+    );
+    expect(state.rows[0]).toEqual({
+      status: "PAUSED",
+      next_action: "HUMAN_REVIEW_REQUIRED",
+      pause_reason: "MATERIAL_QUESTION_LIMIT_REACHED",
+      outbound: 2,
+    });
+  });
+
+  it("asks about a current contradiction instead of declaring sufficiency", async () => {
+    const current = await caseWithMessage("El alcance incluye y excluye pagos");
+    const targetClaimId = randomUUID();
+    const contradictionClaimId = randomUUID();
+    await pool.query(
+      `UPDATE interview_topics SET status = 'CAPTURED'
+       WHERE organization_id = $1 AND case_id = $2`,
+      [organizationId, current.caseId],
+    );
+    await pool.query(
+      `UPDATE interviews SET brief_requested_at = now(), brief_request_message_id = $3
+       WHERE organization_id = $1 AND case_id = $2`,
+      [organizationId, current.caseId, current.messageId],
+    );
+    await pool.query(
+      `INSERT INTO claims
+        (id, organization_id, case_id, kind, category, content, confidence_basis_points,
+         sensitivity, audience, creator)
+       VALUES
+        ($3, $1, $2, 'FACT', 'SCOPE', 'El alcance incluye pagos', 8000,
+         'CONFIDENTIAL', 'INTERNAL', 'HUMAN'),
+        ($4, $1, $2, 'CONTRADICTION', 'SCOPE', 'El alcance también excluye pagos', 8000,
+         'CONFIDENTIAL', 'INTERNAL', 'HUMAN')`,
+      [organizationId, current.caseId, targetClaimId, contradictionClaimId],
+    );
+    await pool.query(
+      `INSERT INTO claim_sources
+        (organization_id, case_id, claim_id, message_id, relation)
+       VALUES ($1, $2, $4, $3, 'SUPPORTS'), ($1, $2, $5, $3, 'SUPPORTS')`,
+      [organizationId, current.caseId, current.messageId, targetClaimId, contradictionClaimId],
+    );
+    await pool.query(
+      `INSERT INTO claim_relations
+        (organization_id, case_id, source_claim_id, target_claim_id, relation)
+       VALUES ($1, $2, $4, $3, 'CONTRADICTS')`,
+      [organizationId, current.caseId, targetClaimId, contradictionClaimId],
+    );
+    const target = `CONTRADICTION:${contradictionClaimId}`;
+    const result = await nextRunner([
+      {
+        kind: "completed",
+        responseId: "resp-resolve-contradiction",
+        output: {
+          action: "ASK",
+          question: "¿El alcance debe incluir o excluir los pagos?",
+          reasonCode: "CONTRADICTION_REQUIRES_RESOLUTION",
+          targetTopic: target,
+          referencedClaimIds: [targetClaimId, contradictionClaimId],
+        },
+        inputTokens: 3,
+        outputTokens: 5,
+        latencyMs: 1,
+      },
+    ]).run(runInput(current.caseId, current.messageId));
+    expect(result).toMatchObject({ kind: "proposal", action: "ASK" });
+    await expect(
+      nextActions.authorize({
+        organizationId,
+        proposalId: result.kind === "proposal" ? result.proposalId : randomUUID(),
+        correlationId: randomUUID(),
+      }),
+    ).resolves.toMatchObject({ kind: "authorized", action: "ASK" });
+  });
+
   it("rejects foreign references and retains uncertain cost without creating claims", async () => {
     const invalidCase = await caseWithMessage();
     const invalid = await runner([

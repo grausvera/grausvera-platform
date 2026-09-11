@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Pool } from "pg";
+import { evaluateCaseMaterialSufficiency } from "./interview.js";
 
 export interface ContextPackageV1 {
   schemaVersion: 1;
@@ -92,9 +93,12 @@ export class ModelInvocationStore {
        ORDER BY created_at, id`,
       [input.organizationId, input.caseId],
     );
-    const missing = topics.rows
-      .filter((topic) => topic.required && topic.status === "MISSING")
-      .map((topic) => topic.topic_key);
+    const material = await evaluateCaseMaterialSufficiency(
+      this.#pool,
+      input.organizationId,
+      input.caseId,
+    );
+    const resolutionTargets = [...material.missing, ...material.blockers];
     return {
       interviewId: state.id,
       context: {
@@ -110,7 +114,7 @@ export class ModelInvocationStore {
           status: topic.status,
           required: topic.required,
         })),
-        sufficiency: { sufficient: missing.length === 0, missing },
+        sufficiency: { sufficient: material.sufficient, missing: resolutionTargets },
         currentClaims: claims.rows,
         messages: messages.rows.map((message) => ({
           id: message.id,

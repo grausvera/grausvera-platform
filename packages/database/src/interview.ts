@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
 
 export type InterviewStatus = "NOT_STARTED" | "ACTIVE" | "SUFFICIENT";
-export type InterviewTopicStatus = "MISSING" | "CAPTURED" | "NOT_APPLICABLE";
+export type InterviewTopicStatus = "MISSING" | "CAPTURED" | "NOT_APPLICABLE" | "DECLARED_UNKNOWN";
 
 export interface InterviewPolicyTopic {
   key: string;
@@ -22,6 +22,8 @@ export interface InterviewState {
   policyVersion: number;
   status: InterviewStatus;
   pendingQuestion: string | null;
+  briefRequestedAt: Date | null;
+  briefRequestMessageId: string | null;
   activeSeconds: number;
   activeStartedAt: Date | null;
   pausedAt: Date | null;
@@ -54,9 +56,110 @@ export function evaluateInterviewPolicy(
   )
     throw new Error("interview_policy_invalid");
   const missing = policy.topics
-    .filter((topic) => topic.required && (states[topic.key] ?? "MISSING") === "MISSING")
+    .filter((topic) => {
+      const status = states[topic.key] ?? "MISSING";
+      return (
+        topic.required &&
+        (status === "MISSING" || (status === "DECLARED_UNKNOWN" && topic.key !== "CONSTRAINTS"))
+      );
+    })
     .map((topic) => topic.key);
   return { sufficient: missing.length === 0, missing };
+}
+
+export function isExplicitBriefRequest(text: string): boolean {
+  return /\b(quiero|quisiera|deseo|necesito|puedes|podr[ií]as|prepara|genera|env[ií]a(?:me)?)\b[\s\S]{0,80}\b(brief|resumen)\b/iu.test(
+    text.normalize("NFC"),
+  );
+}
+
+export interface MaterialSufficiencyInput {
+  policy: InterviewPolicy;
+  states: Readonly<Record<string, InterviewTopicStatus>>;
+  briefRequested: boolean;
+  unresolvedContradictionIds: readonly string[];
+  unbackedClaimIds: readonly string[];
+}
+
+export interface MaterialSufficiencyResult {
+  sufficient: boolean;
+  missing: string[];
+  blockers: string[];
+}
+
+export function evaluateMaterialSufficiency(
+  input: MaterialSufficiencyInput,
+): MaterialSufficiencyResult {
+  const basic = evaluateInterviewPolicy(input.policy, input.states);
+  const missing = [...basic.missing];
+  if (!input.briefRequested) missing.push("BRIEF_REQUEST");
+  const blockers = [
+    ...input.unresolvedContradictionIds.map((id) => `CONTRADICTION:${id}`),
+    ...input.unbackedClaimIds.map((id) => `UNBACKED_CLAIM:${id}`),
+  ];
+  return { sufficient: missing.length === 0 && blockers.length === 0, missing, blockers };
+}
+
+export async function evaluateCaseMaterialSufficiency(
+  client: Pool | PoolClient,
+  organizationId: string,
+  caseId: string,
+): Promise<MaterialSufficiencyResult> {
+  const interview = await client.query<{
+    policy_version: number;
+    brief_request_message_id: string | null;
+  }>(
+    `SELECT p.version AS policy_version, i.brief_request_message_id
+     FROM interviews i JOIN interview_policies p ON p.id = i.policy_id
+     WHERE i.organization_id = $1 AND i.case_id = $2`,
+    [organizationId, caseId],
+  );
+  const current = interview.rows[0];
+  if (!current) throw new Error("interview_not_found");
+  const topics = await client.query<{
+    topic_key: string;
+    required: boolean;
+    status: InterviewTopicStatus;
+  }>(
+    `SELECT topic_key, required, status FROM interview_topics
+     WHERE organization_id = $1 AND case_id = $2 ORDER BY position`,
+    [organizationId, caseId],
+  );
+  const contradictions = await client.query<{ id: string }>(
+    `SELECT DISTINCT source.id
+     FROM claim_relations r
+     JOIN claims source ON source.organization_id = r.organization_id
+       AND source.case_id = r.case_id AND source.id = r.source_claim_id
+     JOIN claims target ON target.organization_id = r.organization_id
+       AND target.case_id = r.case_id AND target.id = r.target_claim_id
+     WHERE r.organization_id = $1 AND r.case_id = $2 AND r.relation = 'CONTRADICTS'
+       AND source.validity = 'CURRENT' AND target.validity = 'CURRENT'
+     ORDER BY source.id`,
+    [organizationId, caseId],
+  );
+  const unbacked = await client.query<{ id: string }>(
+    `SELECT c.id FROM claims c
+     WHERE c.organization_id = $1 AND c.case_id = $2 AND c.validity = 'CURRENT'
+       AND c.kind NOT IN ('QUESTION', 'CONTRADICTION')
+       AND NOT EXISTS (
+         SELECT 1 FROM claim_sources cs
+         WHERE cs.organization_id = c.organization_id AND cs.case_id = c.case_id
+           AND cs.claim_id = c.id
+       )
+     ORDER BY c.id`,
+    [organizationId, caseId],
+  );
+  const policy = {
+    version: current.policy_version,
+    topics: topics.rows.map((topic) => ({ key: topic.topic_key, required: topic.required })),
+  };
+  return evaluateMaterialSufficiency({
+    policy,
+    states: Object.fromEntries(topics.rows.map((topic) => [topic.topic_key, topic.status])),
+    briefRequested: current.brief_request_message_id !== null,
+    unresolvedContradictionIds: contradictions.rows.map((row) => row.id),
+    unbackedClaimIds: unbacked.rows.map((row) => row.id),
+  });
 }
 
 export class InterviewStore {
@@ -165,6 +268,59 @@ export class InterviewStore {
     const client = await this.#pool.connect();
     try {
       return await this.#get(client, organizationId, caseId, false);
+    } finally {
+      client.release();
+    }
+  }
+
+  async recordBriefRequest(input: {
+    organizationId: string;
+    caseId: string;
+    sourceMessageId: string;
+    correlationId: string;
+  }): Promise<{ changed: boolean; interview: InterviewState }> {
+    const client = await this.#pool.connect();
+    try {
+      await client.query("BEGIN");
+      const current = await this.#get(client, input.organizationId, input.caseId, true);
+      if (!current) throw new Error("interview_not_found");
+      if (current.briefRequestMessageId) {
+        await client.query("COMMIT");
+        return { changed: false, interview: current };
+      }
+      const source = await client.query<{ direction: string; content_bytes: Buffer | null }>(
+        `SELECT direction, content_bytes FROM messages
+         WHERE organization_id = $1 AND case_id = $2 AND id = $3`,
+        [input.organizationId, input.caseId, input.sourceMessageId],
+      );
+      const message = source.rows[0];
+      if (
+        message?.direction !== "INBOUND" ||
+        !message.content_bytes ||
+        !isExplicitBriefRequest(message.content_bytes.toString("utf8"))
+      )
+        throw new Error("brief_request_not_explicit");
+      await client.query(
+        `UPDATE interviews SET brief_requested_at = now(), brief_request_message_id = $3,
+           version = version + 1, updated_at = now()
+         WHERE organization_id = $1 AND case_id = $2`,
+        [input.organizationId, input.caseId, input.sourceMessageId],
+      );
+      await this.#audit(
+        client,
+        input.organizationId,
+        input.caseId,
+        current.id,
+        "interview.brief-requested",
+        input.correlationId,
+      );
+      const interview = await this.#get(client, input.organizationId, input.caseId);
+      await client.query("COMMIT");
+      if (!interview) throw new Error("interview_not_found");
+      return { changed: true, interview };
+    } catch (error) {
+      await client.query("ROLLBACK");
+      throw error;
     } finally {
       client.release();
     }
@@ -415,6 +571,8 @@ export class InterviewStore {
       policy_version: number;
       status: InterviewStatus;
       pending_question: string | null;
+      brief_requested_at: Date | null;
+      brief_request_message_id: string | null;
       active_seconds: string;
       active_started_at: Date | null;
       paused_at: Date | null;
@@ -423,6 +581,7 @@ export class InterviewStore {
     }>(
       `SELECT i.id, i.organization_id, i.case_id, i.policy_id,
               p.version AS policy_version, i.status, i.pending_question,
+              i.brief_requested_at, i.brief_request_message_id,
               i.active_seconds, i.active_started_at, i.paused_at, i.pause_reason, i.version
        FROM interviews i JOIN interview_policies p ON p.id = i.policy_id
        WHERE i.organization_id = $1 AND i.case_id = $2
@@ -449,6 +608,8 @@ export class InterviewStore {
       policyVersion: row.policy_version,
       status: row.status,
       pendingQuestion: row.pending_question,
+      briefRequestedAt: row.brief_requested_at,
+      briefRequestMessageId: row.brief_request_message_id,
       activeSeconds: Number(row.active_seconds),
       activeStartedAt: row.active_started_at,
       pausedAt: row.paused_at,

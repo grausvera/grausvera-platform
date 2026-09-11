@@ -134,6 +134,13 @@
       "when": 1790476800000,
       "tag": "0018_bounded_research",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1790563200000,
+      "tag": "0019_material_sufficiency",
+      "breakpoints": true
     }
   ]
 }

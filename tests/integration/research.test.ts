@@ -190,4 +190,76 @@ describe("bounded research", () => {
     });
     expect({ searchCalls, modelCalls }).toEqual({ searchCalls: 1, modelCalls: 1 });
   });
+
+  it("keeps an inaccessible source unresolved without inventing evidence", async () => {
+    let receivedSources = -1;
+    const inaccessible = new BoundedResearchRunner(
+      budgets,
+      store,
+      {
+        async search() {
+          return ["https://example.invalid/unavailable"];
+        },
+        async read() {
+          throw new Error("synthetic_source_unavailable");
+        },
+      },
+      {
+        async invoke(request) {
+          const context = request.context as {
+            researchRequestId: string;
+            question: string;
+            sources: unknown[];
+          };
+          receivedSources = context.sources.length;
+          return {
+            kind: "completed" as const,
+            responseId: `response-${randomUUID()}`,
+            output: {
+              researchRequestId: context.researchRequestId,
+              question: context.question,
+              sources: [],
+              findings: [
+                {
+                  content: "No hay evidencia accesible para resolver la pregunta.",
+                  kind: "UNRESOLVED",
+                  sourceRefs: [],
+                  uncertainty: "La única fuente encontrada no fue accesible.",
+                },
+              ],
+              unresolvedQuestions: ["¿Qué fuente verificable puede respaldar esta afirmación?"],
+              warnings: ["Fuente inaccesible"],
+            },
+            inputTokens: 5,
+            outputTokens: 8,
+            latencyMs: 2,
+          };
+        },
+      },
+      {
+        model: "synthetic-research-model",
+        maximumCostMicros: 50,
+        toolCostMicros: 10,
+        inputUsdPerMillion: 1,
+        outputUsdPerMillion: 1,
+      },
+    );
+    const result = await inaccessible.run(principal, {
+      caseId,
+      question: "What evidence is unavailable?",
+      logicalOperationKey: `research-${randomUUID()}`,
+      attemptKey: randomUUID(),
+      correlationId: randomUUID(),
+    });
+    expect(result).toMatchObject({ kind: "completed", claimIds: [] });
+    expect(receivedSources).toBe(0);
+    const persisted = await pool.query(
+      `SELECT
+        (SELECT count(*)::integer FROM external_sources WHERE research_request_id = $1) AS sources,
+        (SELECT count(*)::integer FROM claims WHERE model_invocation_id =
+          (SELECT model_invocation_id FROM research_requests WHERE id = $1)) AS claims`,
+      [result.researchRequestId],
+    );
+    expect(persisted.rows[0]).toEqual({ sources: 0, claims: 0 });
+  });
 });

@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { Pool, type PoolClient } from "pg";
+import { evaluateCaseMaterialSufficiency } from "./interview.js";
 
 export type NextActionAuthorizationResult =
   | { kind: "authorized"; action: string; messageId?: string; outboxEventId?: string }
@@ -81,6 +82,8 @@ export class NextActionStore {
 
       const blocked = await this.#blockedReason(client, input.organizationId, proposal);
       if (blocked) {
+        if (blocked === "MATERIAL_QUESTION_LIMIT_REACHED")
+          await this.#escalateMaterialLoop(client, input.organizationId, proposal);
         await client.query(
           `UPDATE next_action_proposals SET status = 'REJECTED', updated_at = now()
            WHERE organization_id = $1 AND id = $2`,
@@ -227,12 +230,22 @@ export class NextActionStore {
         (proposal.question.match(/\?/g) ?? []).length !== 1
       )
         return "QUESTION_NOT_ALLOWED";
-      const topicMissing = await client.query(
-        `SELECT 1 FROM interview_topics WHERE organization_id = $1 AND interview_id = $2
-           AND topic_key = $3 AND status = 'MISSING'`,
-        [organizationId, proposal.interview_id, proposal.target_topic],
+      const material = await evaluateCaseMaterialSufficiency(
+        client,
+        organizationId,
+        proposal.case_id,
       );
-      if ((topicMissing.rowCount ?? 0) !== 1) return "TARGET_TOPIC_NOT_MISSING";
+      if (![...material.missing, ...material.blockers].includes(proposal.target_topic ?? ""))
+        return "TARGET_TOPIC_NOT_MISSING";
+      const priorQuestions = await client
+        .query<{ count: number }>(
+          `SELECT count(*)::integer AS count FROM next_action_proposals
+           WHERE organization_id = $1 AND case_id = $2 AND action = 'ASK'
+             AND target_topic = $3 AND status = 'AUTHORIZED'`,
+          [organizationId, proposal.case_id, proposal.target_topic],
+        )
+        .then((result) => result.rows[0]?.count ?? 0);
+      if (priorQuestions >= 2) return "MATERIAL_QUESTION_LIMIT_REACHED";
     }
     if (
       proposal.action === "SUMMARIZE" &&
@@ -240,12 +253,12 @@ export class NextActionStore {
     )
       return "SUMMARY_NOT_ALLOWED";
     if (proposal.action === "READY") {
-      const missing = await client.query(
-        `SELECT 1 FROM interview_topics WHERE organization_id = $1 AND interview_id = $2
-           AND required AND status = 'MISSING' LIMIT 1`,
-        [organizationId, proposal.interview_id],
+      const evaluation = await evaluateCaseMaterialSufficiency(
+        client,
+        organizationId,
+        proposal.case_id,
       );
-      if ((missing.rowCount ?? 0) > 0) return "INTERVIEW_NOT_SUFFICIENT";
+      if (!evaluation.sufficient) return "INTERVIEW_NOT_SUFFICIENT";
     }
     if (proposal.question || proposal.summary) {
       const destinationAllowed = await client.query(
@@ -277,6 +290,50 @@ export class NextActionStore {
       if ((repeated.rowCount ?? 0) > 0) return "COMMUNICATION_REPEATED";
     }
     return undefined;
+  }
+
+  async #escalateMaterialLoop(
+    client: PoolClient,
+    organizationId: string,
+    proposal: {
+      case_id: string;
+      case_status: string;
+      next_action: string | null;
+      interview_id: string;
+    },
+  ) {
+    await client.query(
+      `UPDATE interviews SET
+         active_seconds = active_seconds + coalesce(
+           greatest(0, floor(extract(epoch FROM (now() - active_started_at))))::bigint, 0),
+         active_started_at = NULL, paused_at = now(),
+         pause_reason = 'MATERIAL_QUESTION_LIMIT_REACHED',
+         resume_case_status = $4::case_status, resume_next_action = $5,
+         version = version + 1, updated_at = now()
+       WHERE organization_id = $1 AND case_id = $2 AND id = $3`,
+      [
+        organizationId,
+        proposal.case_id,
+        proposal.interview_id,
+        proposal.case_status,
+        proposal.next_action,
+      ],
+    );
+    await client.query(
+      `UPDATE case_quota_usages SET
+         active_seconds = active_seconds + greatest(
+           0, floor(extract(epoch FROM (now() - last_accounted_at)))
+         )::integer,
+         last_accounted_at = now(), updated_at = now()
+       WHERE organization_id = $1 AND case_id = $2 AND window_ends_at > now()`,
+      [organizationId, proposal.case_id],
+    );
+    await client.query(
+      `UPDATE prospect_cases SET status = 'PAUSED', next_action = 'HUMAN_REVIEW_REQUIRED',
+         version = version + 1, updated_at = now()
+       WHERE organization_id = $1 AND id = $2`,
+      [organizationId, proposal.case_id],
+    );
   }
 
   async #queue(

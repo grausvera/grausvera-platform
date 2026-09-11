@@ -121,6 +121,7 @@ export const interviewTopicStatus = pgEnum("interview_topic_status", [
   "MISSING",
   "CAPTURED",
   "NOT_APPLICABLE",
+  "DECLARED_UNKNOWN",
 ]);
 export const claimKind = pgEnum("claim_kind", [
   "FACT",
@@ -1027,6 +1028,8 @@ export const interviews = pgTable(
     policyId: uuid("policy_id").notNull(),
     status: interviewStatus("status").default("NOT_STARTED").notNull(),
     pendingQuestion: text("pending_question"),
+    briefRequestedAt: timestamp("brief_requested_at", { withTimezone: true }),
+    briefRequestMessageId: uuid("brief_request_message_id"),
     activeSeconds: bigint("active_seconds", { mode: "number" }).default(0).notNull(),
     activeStartedAt: timestamp("active_started_at", { withTimezone: true }).defaultNow(),
     pausedAt: timestamp("paused_at", { withTimezone: true }),
@@ -1048,6 +1051,11 @@ export const interviews = pgTable(
       foreignColumns: [interviewPolicies.organizationId, interviewPolicies.id],
       name: "interviews_policy_fk",
     }).onDelete("restrict"),
+    foreignKey({
+      columns: [t.organizationId, t.caseId, t.briefRequestMessageId],
+      foreignColumns: [messages.organizationId, messages.caseId, messages.id],
+      name: "interviews_brief_request_message_fk",
+    }).onDelete("restrict"),
     unique("interviews_case_unique").on(t.organizationId, t.caseId),
     unique("interviews_organization_case_id_unique").on(t.organizationId, t.caseId, t.id),
     check(
@@ -1057,6 +1065,10 @@ export const interviews = pgTable(
     check(
       "interviews_pause_state_check",
       sql`${t.activeSeconds} >= 0 and ((${t.pausedAt} is null and ${t.pauseReason} is null) or (${t.pausedAt} is not null and length(${t.pauseReason}) > 0))`,
+    ),
+    check(
+      "interviews_brief_request_check",
+      sql`(${t.briefRequestedAt} is null) = (${t.briefRequestMessageId} is null)`,
     ),
   ],
 );
