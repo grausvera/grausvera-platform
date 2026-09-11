@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   AttachmentService,
   AttachmentStore,
@@ -30,8 +30,10 @@ const objectPort: ObjectPort = {
   },
 };
 const pdf = new TextEncoder().encode("%PDF-synthetic-safe");
+let downloadCalls = 0;
 const source: MediaDownloadPort = {
   async download() {
+    downloadCalls += 1;
     return {
       contentType: "application/pdf",
       contentLength: pdf.length,
@@ -113,6 +115,27 @@ afterAll(async () => {
 });
 
 describe("durable safe attachments", () => {
+  it("rejects a foreign case, connection, reference, or provider id before download", async () => {
+    const input = {
+      organizationId,
+      caseId,
+      providerConnectionId: connectionId,
+      mediaReferenceId,
+      providerMediaId: "synthetic-media",
+    };
+    for (const foreign of [
+      { ...input, organizationId: randomUUID() },
+      { ...input, caseId: randomUUID() },
+      { ...input, providerConnectionId: randomUUID() },
+      { ...input, mediaReferenceId: randomUUID() },
+      { ...input, providerMediaId: "foreign-media" },
+    ]) {
+      await expect(service.download(foreign)).rejects.toThrow("attachment_download_not_authorized");
+    }
+    expect(downloadCalls).toBe(0);
+    expect(objects.size).toBe(0);
+  });
+
   it("opens after a failure burst and permits only one recovery probe", async () => {
     for (let attempt = 0; attempt < 3; attempt += 1) {
       await store.acquireDownload(organizationId, connectionId);

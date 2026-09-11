@@ -45,4 +45,26 @@ describe("operational foundation", () => {
       errorCode: "provider_timeout",
     });
   });
+
+  it("redacts sensitive decoys even when supplied through allowed telemetry fields", () => {
+    const output: string[] = [];
+    const logger = createLogger("worker", "test", "debug", (line) => output.push(line));
+
+    logger.write("error", {
+      event: "sentinel-secret-event",
+      correlationId: "sentinel-secret-correlation",
+      errorCode: "credential-canary",
+      jobId: "password-canary",
+      queue: "secret-canary",
+      status: "+51987654321",
+    });
+
+    expect(output).toHaveLength(1);
+    expect(output[0]).not.toContain("sentinel");
+    expect(output[0]).not.toContain("credential");
+    expect(output[0]).not.toContain("password");
+    expect(output[0]).not.toContain("secret-canary");
+    expect(output[0]).not.toContain("+51987654321");
+    expect(JSON.parse(output[0] ?? "{}")).toMatchObject({ event: "redacted_event" });
+  });
 });

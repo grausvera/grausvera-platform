@@ -228,8 +228,10 @@ export class EmailVerificationOutboxStore {
     const result = await this.#pool.query(
       `SELECT 1 FROM email_verification_challenges c
        JOIN contact_points cp ON cp.organization_id=c.organization_id AND cp.id=c.contact_point_id
+       JOIN prospect_cases pc ON pc.organization_id=c.organization_id AND pc.id=c.case_id
        WHERE c.id=$1 AND c.organization_id=$2 AND c.case_id=$3 AND c.contact_point_id=$4
-         AND c.status='PENDING' AND c.expires_at>now() AND cp.verified_at IS NULL`,
+         AND c.status='PENDING' AND c.expires_at>now() AND cp.verified_at IS NULL
+         AND pc.status<>'PAUSED' AND coalesce(pc.next_action,'')<>'PRIVACY_ERASURE_PENDING'`,
       [item.challengeId, item.organizationId, item.caseId, item.contactPointId],
     );
     if ((result.rowCount ?? 0) === 1) return true;

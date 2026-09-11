@@ -193,13 +193,15 @@ export class BriefDeliveryService {
   async authorize(item: ClaimedBriefDelivery): Promise<boolean> {
     const result = await this.#pool.query(
       `SELECT 1 FROM email_deliveries d
+       JOIN prospect_cases pc ON pc.organization_id=d.organization_id AND pc.id=d.case_id
        JOIN brief_approvals a ON a.id=d.approval_id AND a.organization_id=d.organization_id
        JOIN brief_revisions r ON r.id=d.revision_id AND r.organization_id=d.organization_id
        JOIN contact_points cp ON cp.id=d.contact_point_id AND cp.organization_id=d.organization_id
        WHERE d.id=$1 AND d.organization_id=$2 AND d.case_id=$3 AND d.status='PENDING'
          AND a.status='ACTIVE' AND (a.expires_at IS NULL OR a.expires_at>now())
          AND r.status='APPROVED' AND r.is_candidate AND r.snapshot_hash=a.snapshot_hash
-         AND cp.kind='EMAIL' AND cp.verified_at IS NOT NULL AND cp.delivery_blocked_at IS NULL`,
+         AND cp.kind='EMAIL' AND cp.verified_at IS NOT NULL AND cp.delivery_blocked_at IS NULL
+         AND pc.status<>'PAUSED' AND coalesce(pc.next_action,'')<>'PRIVACY_ERASURE_PENDING'`,
       [item.deliveryId, item.organizationId, item.caseId],
     );
     return (result.rowCount ?? 0) === 1;

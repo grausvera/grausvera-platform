@@ -129,13 +129,15 @@ export class OperatorConsoleStore {
       );
       if ((claimed.rowCount ?? 0) !== 1) throw new Error("operator_case_not_found");
       await this.#cancelAutomatedDispatches(client, principal.organizationId, caseId);
-      await client.query(
+      const state = await client.query<{ version: number }>(
         `UPDATE prospect_cases SET status = 'PAUSED', next_action = 'OPERATOR_ASSIGNED',
            version = version + 1, updated_at = now()
-         WHERE organization_id = $1 AND id = $2`,
+         WHERE organization_id = $1 AND id = $2 RETURNING version`,
         [principal.organizationId, caseId],
       );
-      await this.#audit(client, principal, caseId, "case.taken", correlationId);
+      const version = state.rows[0]?.version;
+      if (!version) throw new Error("operator_case_not_found");
+      await this.#audit(client, principal, caseId, version, "case.taken", correlationId);
       await client.query("COMMIT");
     } catch (error) {
       await client.query("ROLLBACK");
@@ -154,15 +156,17 @@ export class OperatorConsoleStore {
     try {
       await client.query("BEGIN");
       await this.#authorize(client, principal);
-      const paused = await client.query(
+      const paused = await client.query<{ version: number }>(
         `UPDATE prospect_cases SET status = 'PAUSED', next_action = 'OPERATOR_PAUSED',
            version = version + 1, updated_at = now()
-         WHERE organization_id = $1 AND id = $2 RETURNING id`,
+         WHERE organization_id = $1 AND id = $2 RETURNING version`,
         [principal.organizationId, caseId],
       );
       if ((paused.rowCount ?? 0) !== 1) throw new Error("operator_case_not_found");
       await this.#cancelAutomatedDispatches(client, principal.organizationId, caseId);
-      await this.#audit(client, principal, caseId, "case.paused", correlationId);
+      const version = paused.rows[0]?.version;
+      if (!version) throw new Error("operator_case_not_found");
+      await this.#audit(client, principal, caseId, version, "case.paused", correlationId);
       await client.query("COMMIT");
     } catch (error) {
       await client.query("ROLLBACK");
@@ -211,9 +215,11 @@ export class OperatorConsoleStore {
         conversation_id: string;
         provider_connection_id: string;
         external_id: string;
+        version: number;
       }>(
-        `SELECT c.id AS conversation_id, c.provider_connection_id, cp.external_id
+        `SELECT c.id AS conversation_id, c.provider_connection_id, cp.external_id, pc.version
          FROM operator_case_assignments a
+         JOIN prospect_cases pc ON pc.organization_id = a.organization_id AND pc.id = a.case_id
          JOIN conversations c ON c.organization_id = a.organization_id AND c.case_id = a.case_id
          JOIN messages m ON m.organization_id = c.organization_id AND m.conversation_id = c.id
            AND m.direction = 'INBOUND'
@@ -276,10 +282,15 @@ export class OperatorConsoleStore {
           principal.userId,
         ],
       );
-      await this.#audit(client, principal, input.caseId, "case.responded", input.correlationId, {
-        messageId,
-        outboxEventId,
-      });
+      await this.#audit(
+        client,
+        principal,
+        input.caseId,
+        destination.version,
+        "case.responded",
+        input.correlationId,
+        { messageId, outboxEventId },
+      );
       await client.query("COMMIT");
       return { messageId, outboxEventId };
     } catch (error) {
@@ -294,6 +305,7 @@ export class OperatorConsoleStore {
     client: PoolClient,
     principal: OperatorPrincipal,
     caseId: string,
+    expectedVersion: number,
     action: string,
     correlationId: string,
     metadata: Record<string, unknown> = {},
@@ -301,15 +313,16 @@ export class OperatorConsoleStore {
     await client.query(
       `INSERT INTO audit_events
         (organization_id, case_id, actor, action, resource_type, resource_id,
-         result, correlation_id, origin, metadata)
-       VALUES ($1, $2, $3, $4, 'prospect_case', $5, 'SUCCEEDED', $6,
-         'operator-console', $7)`,
+         expected_version, result, correlation_id, origin, metadata)
+       VALUES ($1, $2, $3, $4, 'prospect_case', $5, $6, 'SUCCEEDED', $7,
+         'operator-console', $8)`,
       [
         principal.organizationId,
         caseId,
         `operator:${principal.userId}`,
         action,
         caseId,
+        expectedVersion,
         correlationId,
         JSON.stringify(metadata),
       ],

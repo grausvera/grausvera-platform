@@ -1,13 +1,15 @@
 import { randomUUID } from "node:crypto";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { hardenOperatorSecurityChange } from "../../apps/web/app/api/auth/[...all]/route";
+import { getAuth } from "../../apps/web/lib/auth";
 import {
+  BriefSynthesisStore,
   KnowledgeStore,
   OperatorConsoleStore,
   type OperatorPrincipal,
+  ResearchStore,
 } from "../../packages/database/src";
-import { getAuth } from "../../apps/web/lib/auth";
-import { hardenOperatorSecurityChange } from "../../apps/web/app/api/auth/[...all]/route";
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) throw new Error("DATABASE_URL is required for security tests");
@@ -15,6 +17,8 @@ if (!connectionString) throw new Error("DATABASE_URL is required for security te
 const pool = new Pool({ connectionString });
 const store = new OperatorConsoleStore(connectionString);
 const knowledge = new KnowledgeStore(connectionString);
+const research = new ResearchStore(connectionString);
+const synthesis = new BriefSynthesisStore(connectionString);
 const userId = `operator-${randomUUID()}`;
 const caseId = randomUUID();
 const personId = randomUUID();
@@ -24,6 +28,8 @@ const conversationId = randomUUID();
 const claimId = randomUUID();
 const externalSourceId = randomUUID();
 let organizationId: string;
+const foreignOrganizationId = randomUUID();
+const foreignCaseId = randomUUID();
 let principal: OperatorPrincipal;
 
 beforeAll(async () => {
@@ -128,6 +134,8 @@ afterAll(async () => {
   );
   await store.close();
   await knowledge.close();
+  await research.close();
+  await synthesis.close();
   await pool.end();
 });
 
@@ -160,6 +168,41 @@ describe("operator console authorization", () => {
     ).rejects.toThrow("knowledge_case_not_authorized");
   });
 
+  it("rejects foreign reads, mutations, and jobs without another permission system", async () => {
+    const foreignPrincipal = { ...principal, organizationId: foreignOrganizationId };
+    await expect(store.listCases(foreignPrincipal)).rejects.toThrow("operator_forbidden");
+    await expect(store.getCase(foreignPrincipal, caseId)).rejects.toThrow("operator_forbidden");
+    await expect(knowledge.listCaseClaims(foreignPrincipal, caseId)).rejects.toThrow(
+      "knowledge_case_not_authorized",
+    );
+    await expect(store.getCase(principal, foreignCaseId)).rejects.toThrow(
+      "operator_case_not_found",
+    );
+    await expect(knowledge.listCaseClaims(principal, foreignCaseId)).rejects.toThrow(
+      "knowledge_case_not_authorized",
+    );
+    await expect(store.takeCase(foreignPrincipal, caseId, randomUUID())).rejects.toThrow(
+      "operator_forbidden",
+    );
+    await expect(store.pauseCase(foreignPrincipal, caseId, randomUUID())).rejects.toThrow(
+      "operator_forbidden",
+    );
+    await expect(
+      research.authorize(foreignPrincipal, {
+        caseId,
+        question: "Foreign synthetic question",
+        correlationId: randomUUID(),
+      }),
+    ).rejects.toThrow("research_not_authorized");
+    await expect(
+      synthesis.claim({
+        organizationId: foreignOrganizationId,
+        caseId,
+        attemptKey: randomUUID(),
+      }),
+    ).rejects.toThrow("brief_synthesis_case_not_ready");
+  });
+
   it("navigates an authorized claim to its external provenance", async () => {
     await expect(knowledge.listCaseClaims(principal, caseId)).resolves.toEqual([
       expect.objectContaining({
@@ -188,6 +231,7 @@ describe("operator console authorization", () => {
 
   it("takes and pauses the case before creating one audited human response", async () => {
     await store.takeCase(principal, caseId, randomUUID());
+    await store.pauseCase(principal, caseId, randomUUID());
     const idempotencyKey = randomUUID();
     const input = {
       caseId,
@@ -209,12 +253,31 @@ describe("operator console authorization", () => {
     );
     expect(result.rows[0]).toEqual({
       case_status: "PAUSED",
-      next_action: "OPERATOR_ASSIGNED",
+      next_action: "OPERATOR_PAUSED",
       outbox_status: "PENDING",
       event_type: "whatsapp.human.response.v1",
       authorized_operator_user_id: userId,
       response_audits: 1,
     });
+    const audits = await pool.query(
+      `SELECT actor,action,resource_type,resource_id,expected_version,result,
+         correlation_id,origin FROM audit_events
+       WHERE case_id=$1 AND action IN ('case.taken','case.paused','case.responded')
+       ORDER BY occurred_at,id`,
+      [caseId],
+    );
+    expect(audits.rows).toHaveLength(3);
+    for (const audit of audits.rows) {
+      expect(audit).toMatchObject({
+        actor: `operator:${userId}`,
+        resource_type: "prospect_case",
+        resource_id: caseId,
+        result: "SUCCEEDED",
+        origin: "operator-console",
+      });
+      expect(audit.expected_version).toBeGreaterThan(0);
+      expect(audit.correlation_id).toMatch(/^[a-f0-9-]{36}$/);
+    }
   });
 
   it("revokes incompatible sessions after recovery or a TOTP reset", async () => {
