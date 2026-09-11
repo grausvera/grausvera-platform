@@ -48,6 +48,18 @@ export interface ClaimedInbox {
   body: Uint8Array;
 }
 
+export const CASE_ASSOCIATION_CLARIFICATION =
+  "¿Quieres continuar con un proyecto existente o iniciar uno nuevo?";
+
+export function classifyCaseAssociationIntent(text: string): "NEW_CASE" | "UNRESOLVED" {
+  const normalized = text.trim().replace(/\s+/g, " ").toLocaleUpperCase("es");
+  return /^(NUEVO PROYECTO|OTRO PROYECTO|QUIERO (?:INICIAR|CREAR) (?:UN )?NUEVO PROYECTO)[.!]?$/u.test(
+    normalized,
+  )
+    ? "NEW_CASE"
+    : "UNRESOLVED";
+}
+
 export class MessagingStore {
   readonly #pool: Pool;
 
@@ -192,28 +204,92 @@ export class MessagingStore {
           person_id: string;
           contact_point_id: string;
         }>(
-          `SELECT DISTINCT c.case_id, c.id AS conversation_id, cp.person_id, cp.id AS contact_point_id
+          `SELECT DISTINCT ON (c.case_id) c.case_id, c.id AS conversation_id,
+                  cp.person_id, cp.id AS contact_point_id
            FROM contact_points cp
            JOIN case_participants p ON p.organization_id = cp.organization_id AND p.person_id = cp.person_id
            JOIN conversations c ON c.organization_id = p.organization_id AND c.case_id = p.case_id
            WHERE cp.organization_id = $1 AND cp.kind = 'WHATSAPP' AND cp.provider = 'META'
-             AND cp.external_id = $2 AND c.provider_connection_id = $3`,
+             AND cp.external_id = $2 AND c.provider_connection_id = $3
+           ORDER BY c.case_id, c.updated_at DESC, c.id`,
           [context.organization_id, item.senderExternalId, context.provider_connection_id],
         );
-        if (candidates.rowCount !== 1) {
+        let candidate = candidates.rows.length === 1 ? candidates.rows[0] : undefined;
+        let associationMode: "DIRECT" | "REPLY" | "NEW_CASE" | undefined = candidate
+          ? "DIRECT"
+          : undefined;
+        if (candidates.rows.length > 1 && item.replyToProviderMessageId) {
+          const replied = await client.query<{
+            case_id: string;
+            conversation_id: string;
+            person_id: string;
+            contact_point_id: string;
+          }>(
+            `SELECT DISTINCT ON (m.case_id) m.case_id, m.conversation_id,
+                    cp.person_id, cp.id AS contact_point_id
+             FROM messages m
+             JOIN contact_points cp ON cp.organization_id = m.organization_id
+               AND cp.kind = 'WHATSAPP' AND cp.provider = 'META' AND cp.external_id = $2
+             JOIN case_participants p ON p.organization_id = m.organization_id
+               AND p.case_id = m.case_id AND p.person_id = cp.person_id
+             WHERE m.organization_id = $1 AND m.provider_connection_id = $3
+               AND m.provider_message_id = $4 AND m.direction = 'OUTBOUND'
+             ORDER BY m.case_id, m.provider_occurred_at DESC`,
+            [
+              context.organization_id,
+              item.senderExternalId,
+              context.provider_connection_id,
+              item.replyToProviderMessageId,
+            ],
+          );
+          if (replied.rows.length === 1) {
+            candidate = replied.rows[0];
+            associationMode = "REPLY";
+          }
+        }
+        if (
+          candidates.rows.length > 1 &&
+          !candidate &&
+          item.textContent &&
+          classifyCaseAssociationIntent(item.textContent) === "NEW_CASE"
+        ) {
+          const identity = candidates.rows[0];
+          if (!identity) throw new Error("association_identity_unavailable");
+          const caseId = randomUUID();
+          const conversationId = randomUUID();
+          await client.query(
+            `INSERT INTO prospect_cases (id, organization_id, status, next_action)
+             VALUES ($1, $2, 'AWAITING_CONSENT', 'REQUEST_CONSENT')`,
+            [caseId, context.organization_id],
+          );
+          await client.query(
+            `INSERT INTO case_participants (organization_id, case_id, person_id, role)
+             VALUES ($1, $2, $3, 'REQUESTER')`,
+            [context.organization_id, caseId, identity.person_id],
+          );
+          await client.query(
+            `INSERT INTO conversations
+              (id, organization_id, case_id, provider_connection_id)
+             VALUES ($1, $2, $3, $4)`,
+            [conversationId, context.organization_id, caseId, context.provider_connection_id],
+          );
+          candidate = { ...identity, case_id: caseId, conversation_id: conversationId };
+          associationMode = "NEW_CASE";
+        }
+        if (!candidate) {
+          const ambiguous = candidates.rows.length > 1;
           await client.query(
             `UPDATE inbox_event_items SET status = $2::inbox_item_status,
-               reason_code = $3 WHERE id = $1`,
+               reason_code = $3, clarification_prompt = $4 WHERE id = $1`,
             [
               itemId,
-              candidates.rowCount === 0 ? "UNMATCHED" : "AMBIGUOUS",
-              candidates.rowCount === 0 ? "association_missing" : "association_ambiguous",
+              ambiguous ? "AMBIGUOUS" : "UNMATCHED",
+              ambiguous ? "association_clarification_required" : "association_missing",
+              ambiguous ? CASE_ASSOCIATION_CLARIFICATION : null,
             ],
           );
           continue;
         }
-        const candidate = candidates.rows[0];
-        if (!candidate) throw new Error("association_candidate_unavailable");
         const content = item.textContent ? Buffer.from(item.textContent) : null;
         const message = await client.query<{ id: string }>(
           `INSERT INTO messages
@@ -259,9 +335,25 @@ export class MessagingStore {
         }
         await client.query(
           `UPDATE inbox_event_items SET status = 'PROCESSED', case_id = $2,
-             conversation_id = $3, reason_code = NULL WHERE id = $1`,
+             conversation_id = $3, reason_code = NULL, clarification_prompt = NULL WHERE id = $1`,
           [itemId, candidate.case_id, candidate.conversation_id],
         );
+        if (associationMode === "REPLY" || associationMode === "NEW_CASE") {
+          await client.query(
+            `INSERT INTO audit_events
+              (organization_id, case_id, actor, action, resource_type, resource_id,
+               result, correlation_id, origin, metadata)
+             VALUES ($1, $2, 'prospect', 'message.association-resolved',
+               'inbox_event_item', $3, 'SUCCEEDED', $4, 'messaging-store', $5::jsonb)`,
+            [
+              context.organization_id,
+              candidate.case_id,
+              itemId,
+              inboxEventId,
+              JSON.stringify({ mode: associationMode }),
+            ],
+          );
+        }
       }
       const pending = await client.query<{ unresolved: number; ambiguous: number }>(
         `SELECT count(*) FILTER (WHERE status = 'UNMATCHED')::integer AS unresolved,

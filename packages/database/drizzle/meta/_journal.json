@@ -64,6 +64,62 @@
       "when": 1789612800000,
       "tag": "0008_operator_console",
       "breakpoints": true
+    },
+    {
+      "idx": 9,
+      "version": "7",
+      "when": 1789699200000,
+      "tag": "0009_usage_quotas",
+      "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1789785600000,
+      "tag": "0010_budget_ledger",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1789872000000,
+      "tag": "0011_safe_attachments",
+      "breakpoints": true
+    },
+    {
+      "idx": 12,
+      "version": "7",
+      "when": 1789958400000,
+      "tag": "0012_interviews",
+      "breakpoints": true
+    },
+    {
+      "idx": 13,
+      "version": "7",
+      "when": 1790044800000,
+      "tag": "0013_model_extraction",
+      "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1790131200000,
+      "tag": "0014_next_action_proposals",
+      "breakpoints": true
+    },
+    {
+      "idx": 15,
+      "version": "7",
+      "when": 1790217600000,
+      "tag": "0015_interview_pause_resume",
+      "breakpoints": true
+    },
+    {
+      "idx": 16,
+      "version": "7",
+      "when": 1790304000000,
+      "tag": "0016_case_association_clarification",
+      "breakpoints": true
     }
   ]
 }

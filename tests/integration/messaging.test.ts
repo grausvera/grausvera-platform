@@ -250,6 +250,7 @@ describe("durable messaging", () => {
     await store.reconcileInbox(receipt.inboxEventId, normalizeMetaWebhook(body));
     const state = await pool.query(
       `SELECT i.status AS item_status, e.status AS inbox_status,
+              i.reason_code, i.clarification_prompt,
               (SELECT count(*)::integer FROM messages WHERE provider_message_id = 'wamid.ambiguous') AS messages
        FROM inbox_event_items i JOIN inbox_events e ON e.id = i.inbox_event_id
        WHERE i.item_key = 'message:wamid.ambiguous'`,
@@ -257,7 +258,94 @@ describe("durable messaging", () => {
     expect(state.rows[0]).toEqual({
       item_status: "AMBIGUOUS",
       inbox_status: "NEEDS_ACTION",
+      reason_code: "association_clarification_required",
+      clarification_prompt: "¿Quieres continuar con un proyecto existente o iniciar uno nuevo?",
       messages: 0,
     });
+
+    const replyBody = new TextEncoder().encode(
+      JSON.stringify({
+        object: "whatsapp_business_account",
+        entry: [
+          {
+            changes: [
+              {
+                value: {
+                  messages: [
+                    {
+                      from: "synthetic-sender",
+                      id: "wamid.safe-continuation",
+                      context: { id: "wamid.outbound" },
+                      timestamp: "1789000011",
+                      type: "text",
+                      text: { body: "Continuemos" },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    const replyReceipt = await store.persistInbox({
+      providerConnectionId: connectionId,
+      externalEventId: "safe-continuation-batch",
+      body: replyBody,
+    });
+    await store.reconcileInbox(replyReceipt.inboxEventId, normalizeMetaWebhook(replyBody));
+    const continued = await pool.query<{ case_id: string }>(
+      `SELECT case_id FROM messages WHERE provider_message_id = 'wamid.safe-continuation'`,
+    );
+    expect(continued.rows[0]?.case_id).toBe(caseId);
+
+    const newBody = new TextEncoder().encode(
+      JSON.stringify({
+        object: "whatsapp_business_account",
+        entry: [
+          {
+            changes: [
+              {
+                value: {
+                  messages: [
+                    {
+                      from: "synthetic-sender",
+                      id: "wamid.explicit-new-project",
+                      timestamp: "1789000012",
+                      type: "text",
+                      text: { body: "NUEVO PROYECTO" },
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      }),
+    );
+    const newReceipt = await store.persistInbox({
+      providerConnectionId: connectionId,
+      externalEventId: "explicit-new-project-batch",
+      body: newBody,
+    });
+    await store.reconcileInbox(newReceipt.inboxEventId, normalizeMetaWebhook(newBody));
+    const created = await pool.query<{ case_id: string; status: string; next_action: string }>(
+      `SELECT m.case_id, pc.status, pc.next_action
+       FROM messages m JOIN prospect_cases pc ON pc.id = m.case_id
+       WHERE m.provider_message_id = 'wamid.explicit-new-project'`,
+    );
+    expect(created.rows[0]).toMatchObject({
+      status: "AWAITING_CONSENT",
+      next_action: "REQUEST_CONSENT",
+    });
+    expect(created.rows[0]?.case_id).not.toBe(caseId);
+    expect(created.rows[0]?.case_id).not.toBe(secondCaseId);
+    const audit = await pool.query<{ mode: string }>(
+      `SELECT a.metadata ->> 'mode' AS mode FROM audit_events a
+       JOIN inbox_event_items i ON i.id = a.resource_id
+       WHERE i.provider_message_id IN ('wamid.safe-continuation', 'wamid.explicit-new-project')
+       ORDER BY mode`,
+    );
+    expect(audit.rows).toEqual([{ mode: "NEW_CASE" }, { mode: "REPLY" }]);
   });
 });
