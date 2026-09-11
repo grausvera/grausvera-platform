@@ -13,6 +13,7 @@ const configSchema = z.object({
       message: "DATABASE_URL must use postgres or postgresql",
     }),
   LOG_LEVEL: logLevelSchema.default("info"),
+  OBJECT_STORAGE_ROOT: z.string().min(1).default(".data/objects"),
   EMAIL_EMITTER_ENABLED: booleanSchema.default(false),
   EMAIL_SECRET_KEY_BASE64: z.string().min(1).optional(),
   EMAIL_SECRET_KEY_REFERENCE: z.string().min(1).default("email-transient-v1"),

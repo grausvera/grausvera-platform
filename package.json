@@ -14,6 +14,7 @@
   ],
   "scripts": {
     "build": "npm run build --workspace @grausvera/database && npm run build --workspace @grausvera/operations && npm run build --workspace @grausvera/public-content && npm run build --workspace @grausvera/shared && npm run build --workspace @grausvera/web && npm run build --workspace @grausvera/worker",
+    "backup:create": "npm run build --workspace @grausvera/operations && node --env-file-if-exists=.env packages/operations/dist/create-backup.js",
     "db:migrate": "npm run build --workspace @grausvera/database && node --env-file-if-exists=.env packages/database/dist/migrate.js",
     "format:check": "biome format .",
     "job:enqueue:synthetic": "npm run build --workspace @grausvera/worker && npm run enqueue:synthetic --workspace @grausvera/worker",
@@ -23,7 +24,7 @@
     "test:e2e": "playwright test",
     "test:eval": "vitest run --config vitest.eval.config.ts",
     "test:integration": "node --env-file-if-exists=.env node_modules/vitest/vitest.mjs run --config vitest.integration.config.ts",
-    "test:recovery": "node scripts/pending-suite.mjs test:recovery TASK-GP-061",
+    "test:recovery": "vitest run --config vitest.recovery.config.ts",
     "test:security": "node --env-file-if-exists=.env node_modules/vitest/vitest.mjs run --config vitest.security.config.ts",
     "test:unit": "vitest run",
     "typecheck": "npm run typecheck --workspace @grausvera/database && npm run typecheck --workspace @grausvera/operations && npm run typecheck --workspace @grausvera/public-content && npm run typecheck --workspace @grausvera/shared && npm run typecheck --workspace @grausvera/web && npm run typecheck --workspace @grausvera/worker"

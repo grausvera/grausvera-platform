@@ -698,6 +698,7 @@ export const inboxEvents = pgTable(
     status: inboxStatus("status").default("RECEIVED").notNull(),
     receivedAt: timestamp("received_at", { withTimezone: true }).defaultNow().notNull(),
     processedAt: timestamp("processed_at", { withTimezone: true }),
+    processingStartedAt: timestamp("processing_started_at", { withTimezone: true }),
     attempts: integer("attempts").default(0).notNull(),
     lastErrorCode: text("last_error_code"),
   },

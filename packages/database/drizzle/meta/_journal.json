@@ -232,6 +232,13 @@
       "when": 1791686400000,
       "tag": "0032_retention_disposition",
       "breakpoints": true
+    },
+    {
+      "idx": 33,
+      "version": "7",
+      "when": 1791772800000,
+      "tag": "0033_inbox_processing_lease",
+      "breakpoints": true
     }
   ]
 }

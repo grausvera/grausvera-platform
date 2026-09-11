@@ -327,6 +327,29 @@ export class BudgetStore {
     }
   }
 
+  async markAbandonedReservationsUncertain(cutoff: Date): Promise<number> {
+    const candidates = await this.#pool.query<{ id: string; organization_id: string }>(
+      `SELECT id,organization_id FROM budget_reservations
+       WHERE status='RESERVED' AND updated_at<$1 ORDER BY updated_at LIMIT 100`,
+      [cutoff],
+    );
+    let changed = 0;
+    for (const candidate of candidates.rows) {
+      try {
+        const result = await this.reconcile({
+          organizationId: candidate.organization_id,
+          reservationId: candidate.id,
+          outcome: "UNCERTAIN",
+          correlationId: randomUUID(),
+        });
+        if (result.changed) changed += 1;
+      } catch (error) {
+        if ((error as Error).message !== "budget_reconciliation_conflict") throw error;
+      }
+    }
+    return changed;
+  }
+
   async #reservationReceipt(
     client: PoolClient,
     organizationId: string,

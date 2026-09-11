@@ -7,6 +7,7 @@ import {
 } from "../../../../lib/operator-session";
 import {
   correctClaim,
+  createManualBrief,
   pauseCase,
   requestBriefSynthesis,
   respondToCase,
@@ -50,6 +51,24 @@ export default async function OperatorCasePage({
           </form>
         )}
       </div>
+      {item.assigned && item.status === "READY_FOR_SYNTHESIS" && (
+        <section aria-labelledby="manual-brief-heading">
+          <h2 id="manual-brief-heading">Crear brief manual</h2>
+          <p>Disponible cuando los modelos están apagados o no pueden completar la síntesis.</p>
+          <form action={createManualBrief} className="console-form">
+            <input type="hidden" name="caseId" value={caseId} />
+            <label>
+              Brief estructurado (JSON)
+              <textarea name="snapshot" rows={12} maxLength={100000} required />
+            </label>
+            <label>
+              Motivo de autoría manual
+              <input name="reason" maxLength={500} required />
+            </label>
+            <button type="submit">Crear revisión manual</button>
+          </form>
+        </section>
+      )}
       <ol className="console-messages">
         {item.messages.map((message) => (
           <li key={message.id} id={`message-${message.id}`} data-direction={message.direction}>

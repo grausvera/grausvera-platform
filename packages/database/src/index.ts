@@ -17,6 +17,7 @@ export * from "./model-invocation.js";
 export * from "./next-action.js";
 export * from "./object-storage.js";
 export * from "./operator-console.js";
+export * from "./operational-reconciliation.js";
 export * from "./privacy.js";
 export * from "./quota.js";
 export * from "./research.js";

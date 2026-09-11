@@ -1,13 +1,14 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { Pool } from "pg";
-import { BudgetStore } from "../../packages/database/src";
+import { BudgetStore, OperationalInspectionStore } from "../../packages/database/src";
 
 const connectionString = process.env.DATABASE_URL;
 if (!connectionString) throw new Error("DATABASE_URL is required for integration tests");
 
 const pool = new Pool({ connectionString });
 const store = new BudgetStore(connectionString);
+const inspection = new OperationalInspectionStore(connectionString);
 let organizationId: string;
 
 beforeAll(async () => {
@@ -28,6 +29,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await store.close();
+  await inspection.close();
   await pool.end();
 });
 
@@ -152,5 +154,37 @@ describe("transactional budget ledger", () => {
       changed: false,
       availableMicros: 100,
     });
+  });
+
+  it("moves an abandoned reservation to explicit reconciliation without releasing its cost", async () => {
+    const caseId = await activeCase();
+    const reserved = await store.reserve(reservation(caseId, randomUUID(), 40));
+    const now = new Date();
+    await pool.query(`UPDATE budget_reservations SET updated_at=$2 WHERE id=$1`, [
+      reserved.reservationId,
+      new Date(now.getTime() - 16 * 60_000),
+    ]);
+
+    await expect(
+      store.markAbandonedReservationsUncertain(new Date(now.getTime() - 15 * 60_000)),
+    ).resolves.toBe(1);
+    await expect(
+      store.markAbandonedReservationsUncertain(new Date(now.getTime() - 15 * 60_000)),
+    ).resolves.toBe(0);
+    const state = await pool.query(
+      `SELECT r.status,l.reserved_micros::integer,l.uncertain_micros::integer
+       FROM budget_reservations r JOIN budget_ledgers l ON l.id=r.ledger_id WHERE r.id=$1`,
+      [reserved.reservationId],
+    );
+    expect(state.rows[0]).toEqual({
+      status: "UNCERTAIN",
+      reserved_micros: 0,
+      uncertain_micros: 40,
+    });
+    const operations = await inspection.inspect(new Date(now.getTime() - 5 * 60_000));
+    expect(operations).toMatchObject({
+      actions: expect.arrayContaining(["RECONCILE_PROVIDER_USAGE"]),
+    });
+    expect(operations.uncertainReservations).toBeGreaterThanOrEqual(1);
   });
 });
